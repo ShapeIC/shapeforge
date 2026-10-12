@@ -457,3 +457,124 @@ class Session:
             )
 
         return component_id
+
+    def placement_candidates(self):
+        self.validate()
+
+        view = self.cellview.view()
+        selection = [
+            obj
+            for obj in view.object_selection
+            if obj.cv_index == self.cellview.index()
+        ]
+
+        if len(selection) != 2:
+            raise RuntimeError("Select exactly two instances.")
+
+        candidates = []
+
+        for obj in selection:
+            if (
+                not obj.is_cell_inst()
+                or obj.top != self.cell.cell_index()
+                or len(obj.path) != 1
+            ):
+                raise RuntimeError(
+                    "Select two direct instances in the working cell."
+                )
+
+            instance = obj.inst()
+
+            if instance.size() != 1:
+                raise RuntimeError("Instance arrays are not supported.")
+
+            instance_id = instance.property("shapeforge.instance_id")
+            component_id = self.component_id_for_instance(instance)
+            component = self.components.get(component_id)
+
+            if not instance_id or component is None:
+                raise RuntimeError(
+                    "Both instances need ShapeForge IDs and components."
+                )
+
+            if not len(component.ports):
+                raise RuntimeError("Both components must have ports.")
+
+            # El ID debe ser único en toda la celda de trabajo.
+            matches = sum(
+                other.property("shapeforge.instance_id") == instance_id
+                for other in self.cell.each_inst()
+            )
+
+            if matches != 1:
+                raise RuntimeError(
+                    "Duplicate instance ID. Run Normalize Instance IDs."
+                )
+
+            cell = self.layout.cell(instance.cell_index)
+
+            candidates.append({
+                "id": instance_id,
+                "label": f"{cell.name} | {instance_id}",
+                "instance": instance,
+                "component": component,
+            })
+
+        return candidates
+
+    def place_by_ports(self, a, port_a, b, port_b, dx, dy):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        ports_a = {
+            port["name"]: port
+            for port in self.transformed_ports(
+                a["instance"], a["component"]
+            )
+        }
+        ports_b = {
+            port["name"]: port
+            for port in self.transformed_ports(
+                b["instance"], b["component"]
+            )
+        }
+
+        ax, ay = ports_a[port_a]["center"]
+        bx, by = ports_b[port_b]["center"]
+
+        transform = b["instance"].dcplx_trans
+
+        # Calcular el nuevo origen de B conservando su parte lineal.
+        requested_x = transform.disp.x + ax + dx - bx
+        requested_y = transform.disp.y + ay + dy - by
+
+        # Ajustar el origen de B a la grilla de ShapeForge.
+        x = self.dbu_to_um(self.snap_um_to_dbu(requested_x))
+        y = self.dbu_to_um(self.snap_um_to_dbu(requested_y))
+
+        new_transform = pya.DCplxTrans(
+            transform.mag,
+            transform.angle,
+            transform.is_mirror(),
+            x,
+            y,
+        )
+
+        actual_dx = bx + x - transform.disp.x - ax
+        actual_dy = by + y - transform.disp.y - ay
+
+        view = self.cellview.view()
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: place by ports")
+
+        try:
+            b["instance"].dcplx_trans = new_transform
+        finally:
+            view.commit()
+
+        view.zoom_fit()
+
+        return actual_dx, actual_dy

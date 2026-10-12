@@ -4,6 +4,90 @@ from shapeforge.session import Session
 _actions = []
 _session = None
 
+def place_by_ports():
+    if _session is None:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            "Create a PCell first.",
+            pya.MessageBox.Ok,
+        )
+        return
+
+    try:
+        candidates = _session.placement_candidates()
+        labels = [item["label"] for item in candidates]
+
+        reference = pya.InputDialog.ask_item(
+            "ShapeForge — Place by Ports",
+            "Reference instance A (stays fixed):",
+            labels,
+            0,
+        )
+        if reference is None:
+            return
+
+        index_a = labels.index(reference)
+        a = candidates[index_a]
+        b = candidates[1 - index_a]
+
+        names_a = [port.name for port in a["component"].ports]
+        names_b = [port.name for port in b["component"].ports]
+
+        port_a = pya.InputDialog.ask_item(
+            "ShapeForge — Place by Ports",
+            "Reference port on A:",
+            names_a,
+            0,
+        )
+        if port_a is None:
+            return
+
+        port_b = pya.InputDialog.ask_item(
+            "ShapeForge — Place by Ports",
+            f"Target port on B ({b['label']}):",
+            names_b,
+            0,
+        )
+        if port_b is None:
+            return
+
+        dx = pya.InputDialog.ask_double(
+            "ShapeForge — Place by Ports",
+            "dx: port B minus port A (µm):",
+            5.0,
+            3,
+        )
+        if dx is None:
+            return
+
+        dy = pya.InputDialog.ask_double(
+            "ShapeForge — Place by Ports",
+            "dy: port B minus port A (µm):",
+            0.0,
+            3,
+        )
+        if dy is None:
+            return
+
+        actual_dx, actual_dy = _session.place_by_ports(
+            a, port_a, b, port_b, dx, dy
+        )
+
+        pya.MessageBox.info(
+            "ShapeForge — Placement",
+            f"Applied port offset:\n"
+            f"dx = {actual_dx:.6f} µm\n"
+            f"dy = {actual_dy:.6f} µm",
+            pya.MessageBox.Ok,
+        )
+
+    except Exception as error:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            str(error),
+            pya.MessageBox.Ok,
+        )
+
 def normalize_instance_ids():
     if _session is None:
         pya.MessageBox.warning(
@@ -263,6 +347,18 @@ def start():
     menu.insert_item(
         "shapeforge_menu.end",
         "normalize_instance_ids",
+        action,
+    )
+
+    _actions.append(action)
+
+    action = pya.Action()
+    action.title = "Place by Ports..."
+    action.on_triggered = place_by_ports
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "place_by_ports",
         action,
     )
 
