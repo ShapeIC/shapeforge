@@ -4,6 +4,8 @@ from uuid import uuid4
 import gdsfactory as gf
 from shapeforge.components import simplediffpair, test_block
 
+import json
+
 class Session:
     def __init__(self, cellview, cell, grid_um=0.005):
         self.cellview = cellview
@@ -528,6 +530,64 @@ class Session:
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
 
+        if a["id"] == b["id"]:
+            raise RuntimeError("A and B must be different instances.")
+
+        instances = self.placement_instances()
+
+        # Por ahora, A debe ser una referencia libre.
+        if a["instance"].property("shapeforge.placement") is not None:
+            raise RuntimeError(
+                "Placement chains are not supported yet: "
+                "A already has a placement relation."
+            )
+
+        # B tampoco puede convertirse en destino si otras relaciones
+        # ya la utilizan como referencia.
+        for item in instances.values():
+            raw = item["instance"].property("shapeforge.placement")
+
+            if raw is not None:
+                relation = json.loads(raw)
+
+                if relation["reference_id"] == b["id"]:
+                    raise RuntimeError(
+                        "Placement chains are not supported yet: "
+                        "another instance depends on B."
+                    )
+
+        transform, actual_dx, actual_dy = self.placement_transform(
+            a, port_a, b, port_b, dx, dy
+        )
+
+        relation = {
+            "version": 1,
+            "reference_id": a["id"],
+            "reference_port": port_a,
+            "target_port": port_b,
+            "dx_um": dx,
+            "dy_um": dy,
+        }
+        serialized = json.dumps(relation, allow_nan=False)
+
+        view = self.cellview.view()
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: define placement")
+
+        try:
+            b["instance"].dcplx_trans = transform
+            b["instance"].set_property(
+                "shapeforge.placement",
+                serialized,
+            )
+        finally:
+            view.commit()
+
+        view.zoom_fit()
+        return actual_dx, actual_dy
+
+    def placement_transform(self, a, port_a, b, port_b, dx, dy):
         ports_a = {
             port["name"]: port
             for port in self.transformed_ports(
@@ -541,16 +601,17 @@ class Session:
             )
         }
 
+        if port_a not in ports_a or port_b not in ports_b:
+            raise RuntimeError("A placement port no longer exists.")
+
         ax, ay = ports_a[port_a]["center"]
         bx, by = ports_b[port_b]["center"]
 
         transform = b["instance"].dcplx_trans
 
-        # Calcular el nuevo origen de B conservando su parte lineal.
         requested_x = transform.disp.x + ax + dx - bx
         requested_y = transform.disp.y + ay + dy - by
 
-        # Ajustar el origen de B a la grilla de ShapeForge.
         x = self.dbu_to_um(self.snap_um_to_dbu(requested_x))
         y = self.dbu_to_um(self.snap_um_to_dbu(requested_y))
 
@@ -565,16 +626,108 @@ class Session:
         actual_dx = bx + x - transform.disp.x - ax
         actual_dy = by + y - transform.disp.y - ay
 
+        return new_transform, actual_dx, actual_dy
+
+    def placement_instances(self):
+        self.validate()
+
+        result = {}
+
+        for instance in self.cell.each_inst():
+            instance_id = instance.property("shapeforge.instance_id")
+
+            if not instance_id:
+                continue
+
+            if instance_id in result:
+                raise RuntimeError(
+                    "Duplicate instance ID. Run Normalize Instance IDs."
+                )
+
+            if instance.size() != 1:
+                raise RuntimeError(
+                    "Placement does not support instance arrays."
+                )
+
+            component_id = self.component_id_for_instance(instance)
+            component = self.components.get(component_id)
+
+            result[instance_id] = {
+                "id": instance_id,
+                "instance": instance,
+                "component": component,
+            }
+
+        return result
+
+    def regenerate_placement(self):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        instances = self.placement_instances()
+        relations = {}
+
+        for instance_id, item in instances.items():
+            raw = item["instance"].property("shapeforge.placement")
+
+            if raw is not None:
+                relation = json.loads(raw)
+
+                if relation.get("version") != 1:
+                    raise RuntimeError("Unsupported placement version.")
+
+                relations[instance_id] = relation
+
+        # Calcular y validar todo antes de modificar el layout.
+        updates = []
+
+        for target_id, relation in relations.items():
+            reference_id = relation["reference_id"]
+
+            if reference_id not in instances:
+                raise RuntimeError(
+                    f"Missing reference instance: {reference_id}"
+                )
+
+            if reference_id in relations:
+                raise RuntimeError(
+                    "Placement chains or cycles are not supported yet."
+                )
+
+            a = instances[reference_id]
+            b = instances[target_id]
+
+            if a["component"] is None or b["component"] is None:
+                raise RuntimeError(
+                    "A placement component is unavailable in this session."
+                )
+
+            transform, _, _ = self.placement_transform(
+                a,
+                relation["reference_port"],
+                b,
+                relation["target_port"],
+                relation["dx_um"],
+                relation["dy_um"],
+            )
+
+            updates.append((b["instance"], transform))
+
+        if not updates:
+            return 0
+
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
-        view.transaction("ShapeForge: place by ports")
+        view.transaction("ShapeForge: regenerate placement")
 
         try:
-            b["instance"].dcplx_trans = new_transform
+            for instance, transform in updates:
+                instance.dcplx_trans = transform
         finally:
             view.commit()
 
         view.zoom_fit()
-
-        return actual_dx, actual_dy
+        return len(updates)

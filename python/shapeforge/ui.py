@@ -3,7 +3,29 @@ from shapeforge.session import Session
 
 _actions = []
 _session = None
+def regenerate_placement():
+    if _session is None:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            "Create a PCell first.",
+            pya.MessageBox.Ok,
+        )
+        return
 
+    try:
+        count = _session.regenerate_placement()
+
+        pya.MessageBox.info(
+            "ShapeForge",
+            f"Regenerated {count} placement relations.",
+            pya.MessageBox.Ok,
+        )
+    except Exception as error:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            str(error),
+            pya.MessageBox.Ok,
+        )
 def place_by_ports():
     if _session is None:
         pya.MessageBox.warning(
@@ -359,6 +381,18 @@ def start():
     menu.insert_item(
         "shapeforge_menu.end",
         "place_by_ports",
+        action,
+    )
+
+    _actions.append(action)
+
+    action = pya.Action()
+    action.title = "Regenerate Placement"
+    action.on_triggered = regenerate_placement
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "regenerate_placement",
         action,
     )
 
