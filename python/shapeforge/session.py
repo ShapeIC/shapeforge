@@ -1341,3 +1341,115 @@ class Session:
             direction=direction,
             alignment=alignment,
         )
+
+    def route_ports(self, a, port_a, b, port_b, width_um):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        if a["id"] == b["id"]:
+            raise RuntimeError("Select two different instances.")
+
+        if not math.isfinite(width_um) or width_um <= 0:
+            raise ValueError("Route width must be positive.")
+
+        source_a = a["component"].ports[port_a]
+        source_b = b["component"].ports[port_b]
+
+        layer_a = source_a.layer_info
+        layer_b = source_b.layer_info
+
+        if (
+            layer_a.layer,
+            layer_a.datatype,
+        ) != (
+            layer_b.layer,
+            layer_b.datatype,
+        ):
+            raise RuntimeError(
+                "The selected ports are on different layers."
+            )
+
+        ports_a = {
+            port["name"]: port
+            for port in self.transformed_ports(
+                a["instance"], a["component"]
+            )
+        }
+        ports_b = {
+            port["name"]: port
+            for port in self.transformed_ports(
+                b["instance"], b["component"]
+            )
+        }
+
+        ax, ay = ports_a[port_a]["center"]
+        bx, by = ports_b[port_b]["center"]
+
+        start = pya.Point(
+            self.um_to_dbu(ax),
+            self.um_to_dbu(ay),
+        )
+        end = pya.Point(
+            self.um_to_dbu(bx),
+            self.um_to_dbu(by),
+        )
+
+        if start == end:
+            raise RuntimeError("The port centers coincide.")
+
+        width = self.um_to_dbu(width_um)
+
+        if width <= 0:
+            raise RuntimeError(
+                "The route width is smaller than the layout DBU."
+            )
+
+        # Una trayectoria horizontal y luego vertical.
+        points = [start]
+        corner = pya.Point(end.x, start.y)
+
+        if corner != start and corner != end:
+            points.append(corner)
+
+        points.append(end)
+
+        layer = self.layout.layer(
+            layer_a.layer,
+            layer_a.datatype,
+        )
+
+        route_id = str(uuid4())
+
+        route = {
+            "version": 1,
+            "id": route_id,
+            "start_instance_id": a["id"],
+            "start_port": port_a,
+            "end_instance_id": b["id"],
+            "end_port": port_b,
+            "width_um": width_um,
+            "topology": "horizontal_first",
+        }
+
+        view = self.cellview.view()
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: route ports")
+
+        try:
+            shape = self.cell.shapes(layer).insert(
+                pya.Path(points, width)
+            )
+            shape.set_property(
+                "shapeforge.route",
+                json.dumps(route, allow_nan=False),
+            )
+        finally:
+            view.commit()
+
+        view.add_missing_layers()
+        view.zoom_fit()
+
+        return route_id

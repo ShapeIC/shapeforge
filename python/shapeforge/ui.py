@@ -4,6 +4,65 @@ from shapeforge.session import Session
 _actions = []
 _session = None
 
+def route_ports():
+    def execute(session):
+        candidates = session.placement_candidates()
+        labels = [item["label"] for item in candidates]
+
+        choice = pya.InputDialog.ask_item(
+            "ShapeForge — Route Ports",
+            "Start instance:",
+            labels,
+            0,
+        )
+        if choice is None:
+            return
+
+        index_a = labels.index(choice)
+        a = candidates[index_a]
+        b = candidates[1 - index_a]
+
+        names_a = [port.name for port in a["component"].ports]
+        names_b = [port.name for port in b["component"].ports]
+
+        port_a = pya.InputDialog.ask_item(
+            "ShapeForge — Route Ports",
+            "Start port:",
+            names_a,
+            0,
+        )
+        if port_a is None:
+            return
+
+        port_b = pya.InputDialog.ask_item(
+            "ShapeForge — Route Ports",
+            "End port:",
+            names_b,
+            0,
+        )
+        if port_b is None:
+            return
+
+        width = pya.InputDialog.ask_double(
+            "ShapeForge — Route Ports",
+            "Route width (µm):",
+            1.0,
+            3,
+        )
+        if width is None:
+            return
+
+        route_id = session.route_ports(
+            a, port_a, b, port_b, width
+        )
+
+        pya.MessageBox.info(
+            "ShapeForge",
+            f"Created route:\n{route_id}",
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
 def place_by_edges():
     def execute(session):
         candidates = session.placement_candidates()
@@ -729,6 +788,18 @@ def start():
     menu.insert_item(
         "shapeforge_menu.end",
         "place_by_edges",
+        action,
+    )
+
+    _actions.append(action)
+    
+    action = pya.Action()
+    action.title = "Route Ports..."
+    action.on_triggered = route_ports
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "route_ports",
         action,
     )
 
