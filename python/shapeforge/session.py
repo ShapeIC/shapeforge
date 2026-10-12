@@ -553,7 +553,7 @@ class Session:
 
         return candidates
 
-    def place_by_ports(self, a, port_a, b, port_b, dx, dy, kind="ports"):
+    def place_by_ports(self, a, port_a, b, port_b, dx, dy, kind="ports", direction=None, alignment=None):
         self.validate()
 
         if not self.layout.is_editable():
@@ -571,6 +571,10 @@ class Session:
             "dx_um": dx,
             "dy_um": dy,
         }
+
+        if kind == "edges":
+            relation["direction"] = direction
+            relation["alignment"] = alignment
 
         serialized = json.dumps(relation, allow_nan=False)
 
@@ -955,22 +959,29 @@ class Session:
             return f"{resolved:g} µm"
 
         kind = relation.get("kind", "ports")
-        is_right_of = kind == "right_of"
+        is_edges = kind in ("right_of", "edges")
 
         reference_port = (
-            "Bounding box" if is_right_of
+            "Bounding box" if is_edges
             else relation["reference_port"]
         )
         target_port = (
-            "Bounding box" if is_right_of
+            "Bounding box" if is_edges
             else relation["target_port"]
         )
 
-        x_label = "Edge gap" if is_right_of else "dx"
-        y_label = "Center Y offset" if is_right_of else "dy"
+        x_label = "Edge gap" if is_edges else "dx"
+        y_label = "Perpendicular offset" if is_edges else "dy"
+
+        description = kind
+
+        if is_edges:
+            direction = relation.get("direction", "right")
+            alignment = relation.get("alignment", "center")
+            description = f"{kind}: {direction}, align {alignment}"
 
         return (
-            f"Type: {kind}\n\n"
+            f"Type: {description}\n\n"
             f"A: {reference_name}\n"
             f"ID: {reference_id}\n"
             f"Reference: {reference_port}\n\n"
@@ -1002,6 +1013,8 @@ class Session:
             dx,
             dy,
             kind=relation.get("kind", "ports"),
+            direction=relation.get("direction"),
+            alignment=relation.get("alignment"),
         )
 
     def remove_placement(self):
@@ -1133,60 +1146,16 @@ class Session:
     def right_of_transform(
         self, a, b, gap, dy, transform_a=None, transform_b=None
     ):
-        gap = self.resolve_offset(gap)
-        dy = self.resolve_offset(dy)
-
-        if gap < 0:
-            raise ValueError("The edge gap must be nonnegative.")
-
-        if transform_a is None:
-            transform_a = a["instance"].dcplx_trans
-
-        if transform_b is None:
-            transform_b = b["instance"].dcplx_trans
-
-        box_a = self.placement_bbox(a, transform_a)
-        box_b = self.placement_bbox(b, transform_b)
-
-        center_a_y = (box_a.bottom + box_a.top) / 2
-        center_b_y = (box_b.bottom + box_b.top) / 2
-
-        requested_x = (
-            transform_b.disp.x + box_a.right + gap - box_b.left
+        return self.edges_transform(
+            a,
+            b,
+            gap,
+            dy,
+            direction="right",
+            alignment="center",
+            transform_a=transform_a,
+            transform_b=transform_b,
         )
-        requested_y = (
-            transform_b.disp.y + center_a_y + dy - center_b_y
-        )
-
-        # Redondear hacia arriba para no reducir la separación.
-        grid_position = requested_x / self.grid_um
-        nearest = round(grid_position)
-
-        if math.isclose(
-            grid_position, nearest, rel_tol=0, abs_tol=1e-9
-        ):
-            x = nearest * self.grid_um
-        else:
-            x = math.ceil(grid_position) * self.grid_um
-
-        y = self.dbu_to_um(self.snap_um_to_dbu(requested_y))
-
-        transform = pya.DCplxTrans(
-            transform_b.mag,
-            transform_b.angle,
-            transform_b.is_mirror(),
-            x,
-            y,
-        )
-
-        actual_gap = (
-            box_b.left + x - transform_b.disp.x - box_a.right
-        )
-        actual_dy = (
-            center_b_y + y - transform_b.disp.y - center_a_y
-        )
-
-        return transform, actual_gap, actual_dy
 
     def relation_transform(
         self, a, b, relation, transform_a=None, transform_b=None
@@ -1215,9 +1184,160 @@ class Session:
                 transform_b=transform_b,
             )
 
+        if kind == "edges":
+            return self.edges_transform(
+                a,
+                b,
+                relation["dx_um"],
+                relation["dy_um"],
+                relation["direction"],
+                relation["alignment"],
+                transform_a=transform_a,
+                transform_b=transform_b,
+            )
+
         raise RuntimeError(f"Unknown placement kind: {kind}")
 
     def place_right_of(self, a, b, gap, dy=0):
         return self.place_by_ports(
             a, None, b, None, gap, dy, kind="right_of"
+        )
+
+    def edges_transform(
+        self,
+        a,
+        b,
+        gap,
+        offset,
+        direction,
+        alignment,
+        transform_a=None,
+        transform_b=None,
+    ):
+        gap = self.resolve_offset(gap)
+        offset = self.resolve_offset(offset)
+
+        if gap < 0:
+            raise ValueError("The edge gap must be nonnegative.")
+
+        horizontal = direction in ("right", "left")
+
+        if direction not in ("right", "left", "above", "below"):
+            raise ValueError("Invalid placement direction.")
+
+        allowed = (
+            ("bottom", "center", "top")
+            if horizontal
+            else ("left", "center", "right")
+        )
+
+        if alignment not in allowed:
+            raise ValueError("Invalid alignment for this direction.")
+
+        if transform_a is None:
+            transform_a = a["instance"].dcplx_trans
+
+        if transform_b is None:
+            transform_b = b["instance"].dcplx_trans
+
+        box_a = self.placement_bbox(a, transform_a)
+        box_b = self.placement_bbox(b, transform_b)
+
+        def anchor(box):
+            if horizontal:
+                return {
+                    "bottom": box.bottom,
+                    "center": (box.bottom + box.top) / 2,
+                    "top": box.top,
+                }[alignment]
+
+            return {
+                "left": box.left,
+                "center": (box.left + box.right) / 2,
+                "right": box.right,
+            }[alignment]
+
+        anchor_a = anchor(box_a)
+        anchor_b = anchor(box_b)
+
+        if direction == "right":
+            delta_x = box_a.right + gap - box_b.left
+            delta_y = anchor_a + offset - anchor_b
+        elif direction == "left":
+            delta_x = box_a.left - gap - box_b.right
+            delta_y = anchor_a + offset - anchor_b
+        elif direction == "above":
+            delta_x = anchor_a + offset - anchor_b
+            delta_y = box_a.top + gap - box_b.bottom
+        else:
+            delta_x = anchor_a + offset - anchor_b
+            delta_y = box_a.bottom - gap - box_b.top
+
+        requested_x = transform_b.disp.x + delta_x
+        requested_y = transform_b.disp.y + delta_y
+
+        def snap_outward(value, positive):
+            position = value / self.grid_um
+            nearest = round(position)
+
+            if math.isclose(
+                position, nearest, rel_tol=0, abs_tol=1e-9
+            ):
+                index = nearest
+            else:
+                index = (
+                    math.ceil(position)
+                    if positive
+                    else math.floor(position)
+                )
+
+            return index * self.grid_um
+
+        if horizontal:
+            x = snap_outward(requested_x, direction == "right")
+            y = self.dbu_to_um(self.snap_um_to_dbu(requested_y))
+        else:
+            x = self.dbu_to_um(self.snap_um_to_dbu(requested_x))
+            y = snap_outward(requested_y, direction == "above")
+
+        transform = pya.DCplxTrans(
+            transform_b.mag,
+            transform_b.angle,
+            transform_b.is_mirror(),
+            x,
+            y,
+        )
+
+        moved_x = x - transform_b.disp.x
+        moved_y = y - transform_b.disp.y
+
+        if direction == "right":
+            actual_gap = box_b.left + moved_x - box_a.right
+        elif direction == "left":
+            actual_gap = box_a.left - box_b.right - moved_x
+        elif direction == "above":
+            actual_gap = box_b.bottom + moved_y - box_a.top
+        else:
+            actual_gap = box_a.bottom - box_b.top - moved_y
+
+        actual_offset = (
+            anchor_b
+            + (moved_y if horizontal else moved_x)
+            - anchor_a
+        )
+
+        return transform, actual_gap, actual_offset
+
+
+    def place_by_edges(self, a, b, gap, offset, direction, alignment):
+        return self.place_by_ports(
+            a,
+            None,
+            b,
+            None,
+            gap,
+            offset,
+            kind="edges",
+            direction=direction,
+            alignment=alignment,
         )

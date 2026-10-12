@@ -4,6 +4,84 @@ from shapeforge.session import Session
 _actions = []
 _session = None
 
+def place_by_edges():
+    def execute(session):
+        candidates = session.placement_candidates()
+        labels = [item["label"] for item in candidates]
+
+        choice = pya.InputDialog.ask_item(
+            "ShapeForge — Place by Edges",
+            "Reference instance A:",
+            labels,
+            0,
+        )
+        if choice is None:
+            return
+
+        index_a = labels.index(choice)
+        a = candidates[index_a]
+        b = candidates[1 - index_a]
+
+        direction = pya.InputDialog.ask_item(
+            "ShapeForge — Place by Edges",
+            "Position of B relative to A:",
+            ["right", "left", "above", "below"],
+            0,
+        )
+        if direction is None:
+            return
+
+        alignments = (
+            ["bottom", "center", "top"]
+            if direction in ("right", "left")
+            else ["left", "center", "right"]
+        )
+
+        alignment = pya.InputDialog.ask_item(
+            "ShapeForge — Place by Edges",
+            "Align bounding boxes:",
+            alignments,
+            1,
+        )
+        if alignment is None:
+            return
+
+        gap_text = pya.InputDialog.ask_string(
+            "ShapeForge — Place by Edges",
+            "Edge gap (µm): number or parameter name:",
+            "5",
+        )
+        if gap_text is None:
+            return
+
+        gap = session.parse_offset(gap_text)
+
+        axis = "Y" if direction in ("right", "left") else "X"
+
+        offset_text = pya.InputDialog.ask_string(
+            "ShapeForge — Place by Edges",
+            f"Alignment offset along {axis} (µm):",
+            "0",
+        )
+        if offset_text is None:
+            return
+
+        offset = session.parse_offset(offset_text)
+
+        actual_gap, actual_offset = session.place_by_edges(
+            a, b, gap, offset, direction, alignment
+        )
+
+        pya.MessageBox.info(
+            "ShapeForge — Placement",
+            f"Direction: {direction}\n"
+            f"Alignment: {alignment}\n"
+            f"Gap: {actual_gap:.6f} µm\n"
+            f"Offset along {axis}: {actual_offset:.6f} µm",
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
 def place_right_of():
     def execute(session):
         candidates = session.placement_candidates()
@@ -68,10 +146,10 @@ def edit_placement():
     def execute(session):
         _, relation = session.selected_placement_target()
 
-        is_right_of = relation.get("kind", "ports") == "right_of"
+        is_edges = relation.get("kind", "ports") in ("right_of", "edges")
 
-        x_label = "Edge gap" if is_right_of else "dx"
-        y_label = "Center Y offset" if is_right_of else "dy"
+        x_label = "Edge gap" if is_edges else "dx"
+        y_label = "Perpendicular offset" if is_edges else "dy"
 
         dx_text = pya.InputDialog.ask_string(
             "ShapeForge — Edit Placement",
@@ -639,6 +717,18 @@ def start():
     menu.insert_item(
         "shapeforge_menu.end",
         "place_right_of",
+        action,
+    )
+
+    _actions.append(action)
+
+    action = pya.Action()
+    action.title = "Place by Edges..."
+    action.on_triggered = place_by_edges
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "place_by_edges",
         action,
     )
 
