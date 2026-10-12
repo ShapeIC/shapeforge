@@ -401,6 +401,34 @@ class Session:
             if component_id in self.components or instance_id:
                 managed.append(instance)
 
+        groups = {}
+        protected_ids = set()
+
+        for instance in managed:
+            instance_id = instance.property("shapeforge.instance_id")
+
+            if instance_id:
+                groups.setdefault(instance_id, []).append(instance)
+
+            raw = instance.property("shapeforge.placement")
+
+            if raw is not None:
+                relation = json.loads(raw)
+
+                # Proteger tanto el destino como la referencia.
+                if instance_id:
+                    protected_ids.add(instance_id)
+
+                protected_ids.add(relation["reference_id"])
+
+        for instance_id, group in groups.items():
+            if len(group) > 1 and instance_id in protected_ids:
+                raise RuntimeError(
+                    "A duplicated ID participates in placement.\n"
+                    "Select the instance that should keep its identity "
+                    "and run Keep Selected Instance ID."
+                )
+
         # Reservar todos los IDs existentes.
         reserved = {
             instance.property("shapeforge.instance_id")
@@ -730,4 +758,95 @@ class Session:
             view.commit()
 
         view.zoom_fit()
+        return len(updates)
+
+    def keep_selected_instance_id(self):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        view = self.cellview.view()
+        selection = [
+            obj
+            for obj in view.object_selection
+            if obj.cv_index == self.cellview.index()
+        ]
+
+        if len(selection) != 1:
+            raise RuntimeError(
+                "Select exactly one instance to keep its identity."
+            )
+
+        obj = selection[0]
+
+        if (
+            not obj.is_cell_inst()
+            or obj.top != self.cell.cell_index()
+            or len(obj.path) != 1
+        ):
+            raise RuntimeError(
+                "Select a direct instance in the working cell."
+            )
+
+        keeper = obj.inst()
+
+        if keeper.size() != 1:
+            raise RuntimeError("Instance arrays are not supported.")
+
+        instance_id = keeper.property("shapeforge.instance_id")
+
+        if not instance_id:
+            raise RuntimeError(
+                "The selected instance has no ShapeForge ID."
+            )
+
+        # Terminar la iteración antes de modificar propiedades.
+        instances = list(self.cell.each_inst())
+
+        duplicates = [
+            instance
+            for instance in instances
+            if instance.property("shapeforge.instance_id") == instance_id
+            and instance != keeper
+        ]
+
+        if not duplicates:
+            return 0
+
+        if any(instance.size() != 1 for instance in duplicates):
+            raise RuntimeError("Instance arrays are not supported.")
+
+        reserved = {
+            instance.property("shapeforge.instance_id")
+            for instance in instances
+        }
+
+        updates = []
+
+        for instance in duplicates:
+            new_id = str(uuid4())
+
+            while new_id in reserved:
+                new_id = str(uuid4())
+
+            reserved.add(new_id)
+            updates.append((instance, new_id))
+
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: resolve duplicated instance ID")
+
+        try:
+            for instance, new_id in updates:
+                instance.set_property(
+                    "shapeforge.instance_id",
+                    new_id,
+                )
+
+                # La copia queda libre; no hereda la relación del destino.
+                instance.delete_property("shapeforge.placement")
+        finally:
+            view.commit()
+
         return len(updates)

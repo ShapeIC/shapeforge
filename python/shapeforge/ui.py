@@ -3,6 +3,32 @@ from shapeforge.session import Session
 
 _actions = []
 _session = None
+
+
+def keep_selected_instance_id():
+    if _session is None:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            "Create a PCell first.",
+            pya.MessageBox.Ok,
+        )
+        return
+
+    try:
+        count = _session.keep_selected_instance_id()
+
+        pya.MessageBox.info(
+            "ShapeForge",
+            f"Selected instance kept its ID.\n"
+            f"Assigned new IDs to {count} copies.",
+            pya.MessageBox.Ok,
+        )
+    except Exception as error:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            str(error),
+            pya.MessageBox.Ok,
+        )
 def regenerate_placement():
     if _session is None:
         pya.MessageBox.warning(
@@ -393,6 +419,18 @@ def start():
     menu.insert_item(
         "shapeforge_menu.end",
         "regenerate_placement",
+        action,
+    )
+
+    _actions.append(action)
+    
+    action = pya.Action()
+    action.title = "Keep Selected Instance ID"
+    action.on_triggered = keep_selected_instance_id
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "keep_selected_instance_id",
         action,
     )
 
