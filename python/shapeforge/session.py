@@ -616,6 +616,8 @@ class Session:
         return actual_dx, actual_dy
 
     def placement_transform(self, a, port_a, b, port_b, dx, dy):
+        dx = self.resolve_offset(dx)
+        dy = self.resolve_offset(dy)
         ports_a = {
             port["name"]: port
             for port in self.transformed_ports(
@@ -850,3 +852,197 @@ class Session:
             view.commit()
 
         return len(updates)
+
+    def parameters(self):
+        self.validate()
+
+        raw = self.cell.property("shapeforge.parameters")
+        return {} if raw is None else json.loads(raw)
+
+    def set_parameter(self, name, value_um):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        name = name.strip()
+
+        if not name.isidentifier():
+            raise ValueError(
+                "Use a valid parameter name, for example: spacing."
+            )
+
+        if not math.isfinite(value_um):
+            raise ValueError("The parameter value must be finite.")
+
+        parameters = self.parameters()
+        parameters[name] = float(value_um)
+        serialized = json.dumps(parameters, allow_nan=False)
+
+        view = self.cellview.view()
+        view.cancel()
+        view.transaction(f"ShapeForge: set parameter {name}")
+
+        try:
+            self.cell.set_property(
+                "shapeforge.parameters",
+                serialized,
+            )
+        finally:
+            view.commit()
+
+    def resolve_offset(self, value):
+        """Resolve a numeric offset or a parameter name, in µm."""
+        if isinstance(value, str):
+            parameters = self.parameters()
+
+            if value not in parameters:
+                raise ValueError(f"Unknown parameter: {value}")
+
+            result = float(parameters[value])
+        else:
+            result = float(value)
+
+        if not math.isfinite(result):
+            raise ValueError("The offset must be finite.")
+
+        return result
+
+    def parse_offset(self, text):
+        """Accept a number or an existing parameter name."""
+        text = text.strip()
+
+        try:
+            value = float(text)
+        except ValueError:
+            value = text
+
+        # Comprobar que pueda resolverse antes de guardar la relación.
+        self.resolve_offset(value)
+        return value
+
+    def selected_placement_target(self):
+        self.validate()
+
+        view = self.cellview.view()
+        selection = [
+            obj
+            for obj in view.object_selection
+            if obj.cv_index == self.cellview.index()
+        ]
+
+        if len(selection) != 1:
+            raise RuntimeError("Select exactly one target instance B.")
+
+        obj = selection[0]
+
+        if (
+            not obj.is_cell_inst()
+            or obj.top != self.cell.cell_index()
+            or len(obj.path) != 1
+        ):
+            raise RuntimeError(
+                "Select a direct instance in the working cell."
+            )
+
+        instance = obj.inst()
+
+        if instance.size() != 1:
+            raise RuntimeError("Instance arrays are not supported.")
+
+        instance_id = instance.property("shapeforge.instance_id")
+
+        if not instance_id:
+            raise RuntimeError("The instance has no ShapeForge ID.")
+
+        instances = self.placement_instances()
+        target = instances[instance_id]
+
+        raw = instance.property("shapeforge.placement")
+
+        if raw is None:
+            raise RuntimeError("The selected instance has no placement relation.")
+
+        relation = json.loads(raw)
+
+        if relation.get("version") != 1:
+            raise RuntimeError("Unsupported placement version.")
+
+        return target, relation
+
+    def placement_info(self):
+        target, relation = self.selected_placement_target()
+        instances = self.placement_instances()
+
+        reference_id = relation["reference_id"]
+        reference = instances.get(reference_id)
+
+        if reference is None:
+            reference_name = "Missing instance"
+        else:
+            reference_name = self.layout.cell(
+                reference["instance"].cell_index
+            ).name
+
+        target_name = self.layout.cell(
+            target["instance"].cell_index
+        ).name
+
+        def describe(value):
+            try:
+                resolved = self.resolve_offset(value)
+            except ValueError as error:
+                return f"{value} — {error}"
+
+            if isinstance(value, str):
+                return f"{value} = {resolved:g} µm"
+
+            return f"{resolved:g} µm"
+
+        return (
+            f"A: {reference_name}\n"
+            f"ID: {reference_id}\n"
+            f"Port: {relation['reference_port']}\n\n"
+            f"B: {target_name}\n"
+            f"ID: {target['id']}\n"
+            f"Port: {relation['target_port']}\n\n"
+            f"dx: {describe(relation['dx_um'])}\n"
+            f"dy: {describe(relation['dy_um'])}"
+        )
+
+    def edit_placement(self, dx, dy):
+        target, relation = self.selected_placement_target()
+        instances = self.placement_instances()
+
+        reference = instances.get(relation["reference_id"])
+
+        if reference is None:
+            raise RuntimeError("The reference instance no longer exists.")
+
+        if reference["component"] is None or target["component"] is None:
+            raise RuntimeError("A linked component is unavailable.")
+
+        # Reutilizar la validación, el cálculo y la transacción existentes.
+        return self.place_by_ports(
+            reference,
+            relation["reference_port"],
+            target,
+            relation["target_port"],
+            dx,
+            dy,
+        )
+
+    def remove_placement(self):
+        target, _ = self.selected_placement_target()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        view = self.cellview.view()
+        view.cancel()
+        view.transaction("ShapeForge: remove placement")
+
+        try:
+            target["instance"].delete_property("shapeforge.placement")
+        finally:
+            view.commit()

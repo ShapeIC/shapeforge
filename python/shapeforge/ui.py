@@ -3,8 +3,118 @@ from shapeforge.session import Session
 
 _actions = []
 _session = None
+def placement_info():
+    def execute(session):
+        pya.MessageBox.info(
+            "ShapeForge — Placement",
+            session.placement_info(),
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
 
 
+def edit_placement():
+    def execute(session):
+        _, relation = session.selected_placement_target()
+
+        dx_text = pya.InputDialog.ask_string(
+            "ShapeForge — Edit Placement",
+            "dx (µm): number or parameter name:",
+            str(relation["dx_um"]),
+        )
+        if dx_text is None:
+            return
+
+        dx = session.parse_offset(dx_text)
+
+        dy_text = pya.InputDialog.ask_string(
+            "ShapeForge — Edit Placement",
+            "dy (µm): number or parameter name:",
+            str(relation["dy_um"]),
+        )
+        if dy_text is None:
+            return
+
+        dy = session.parse_offset(dy_text)
+
+        actual_dx, actual_dy = session.edit_placement(dx, dy)
+
+        pya.MessageBox.info(
+            "ShapeForge — Placement",
+            f"Applied port offset:\n"
+            f"dx = {actual_dx:.6f} µm\n"
+            f"dy = {actual_dy:.6f} µm",
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
+
+
+def remove_placement():
+    run_session_action(lambda session: session.remove_placement())
+def run_session_action(callback):
+    if _session is None:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            "Create a PCell first.",
+            pya.MessageBox.Ok,
+        )
+        return
+
+    try:
+        callback(_session)
+    except Exception as error:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            str(error),
+            pya.MessageBox.Ok,
+        )
+def set_parameter():
+    if _session is None:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            "Create a PCell first.",
+            pya.MessageBox.Ok,
+        )
+        return
+
+    try:
+        parameters = _session.parameters()
+
+        existing = "\n".join(
+            f"{name} = {value:g} µm"
+            for name, value in sorted(parameters.items())
+        )
+
+        name = pya.InputDialog.ask_string(
+            "ShapeForge — Parameter",
+            "Parameter name:\n\n"
+            + (existing or "No parameters defined."),
+            "spacing",
+        )
+        if name is None:
+            return
+
+        name = name.strip()
+
+        value = pya.InputDialog.ask_double(
+            "ShapeForge — Parameter",
+            f"Value of {name} (µm):",
+            parameters.get(name, 10.0),
+            6,
+        )
+        if value is None:
+            return
+
+        _session.set_parameter(name, value)
+
+    except Exception as error:
+        pya.MessageBox.warning(
+            "ShapeForge",
+            str(error),
+            pya.MessageBox.Ok,
+        )
 def keep_selected_instance_id():
     if _session is None:
         pya.MessageBox.warning(
@@ -99,23 +209,25 @@ def place_by_ports():
         if port_b is None:
             return
 
-        dx = pya.InputDialog.ask_double(
+        dx_text = pya.InputDialog.ask_string(
             "ShapeForge — Place by Ports",
-            "dx: port B minus port A (µm):",
-            5.0,
-            3,
+            "dx (µm): enter a number or parameter name:",
+            "spacing",
         )
-        if dx is None:
+        if dx_text is None:
             return
 
-        dy = pya.InputDialog.ask_double(
+        dx = _session.parse_offset(dx_text)
+
+        dy_text = pya.InputDialog.ask_string(
             "ShapeForge — Place by Ports",
-            "dy: port B minus port A (µm):",
-            0.0,
-            3,
+            "dy (µm): enter a number or parameter name:",
+            "0",
         )
-        if dy is None:
+        if dy_text is None:
             return
+
+        dy = _session.parse_offset(dy_text)
 
         actual_dx, actual_dy = _session.place_by_ports(
             a, port_a, b, port_b, dx, dy
@@ -435,3 +547,32 @@ def start():
     )
 
     _actions.append(action)
+
+    action = pya.Action()
+    action.title = "Set Parameter..."
+    action.on_triggered = set_parameter
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "set_parameter",
+        action,
+    )
+
+    _actions.append(action)
+
+    for name, title, callback in [
+        ("placement_info", "Placement Info", placement_info),
+        ("edit_placement", "Edit Placement...", edit_placement),
+        ("remove_placement", "Remove Placement", remove_placement),
+    ]:
+        action = pya.Action()
+        action.title = title
+        action.on_triggered = callback
+
+        menu.insert_item(
+            "shapeforge_menu.end",
+            name,
+            action,
+        )
+
+        _actions.append(action)
