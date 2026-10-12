@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<klayout-macro>
+  <description>ShapeForge</description>
+  <autorun>true</autorun>
+  <autorun-early>false</autorun-early>
+  <show-in-menu>false</show-in-menu>
+  <interpreter>python</interpreter>
+
+  <text>
+from shapeforge.ui import start
+
+start()
+  </text>
+</klayout-macro>
