@@ -553,7 +553,7 @@ class Session:
 
         return candidates
 
-    def place_by_ports(self, a, port_a, b, port_b, dx, dy):
+    def place_by_ports(self, a, port_a, b, port_b, dx, dy, kind="ports"):
         self.validate()
 
         if not self.layout.is_editable():
@@ -564,6 +564,7 @@ class Session:
 
         relation = {
             "version": 1,
+            "kind": kind,
             "reference_id": a["id"],
             "reference_port": port_a,
             "target_port": port_b,
@@ -953,15 +954,31 @@ class Session:
 
             return f"{resolved:g} µm"
 
+        kind = relation.get("kind", "ports")
+        is_right_of = kind == "right_of"
+
+        reference_port = (
+            "Bounding box" if is_right_of
+            else relation["reference_port"]
+        )
+        target_port = (
+            "Bounding box" if is_right_of
+            else relation["target_port"]
+        )
+
+        x_label = "Edge gap" if is_right_of else "dx"
+        y_label = "Center Y offset" if is_right_of else "dy"
+
         return (
+            f"Type: {kind}\n\n"
             f"A: {reference_name}\n"
             f"ID: {reference_id}\n"
-            f"Port: {relation['reference_port']}\n\n"
+            f"Reference: {reference_port}\n\n"
             f"B: {target_name}\n"
             f"ID: {target['id']}\n"
-            f"Port: {relation['target_port']}\n\n"
-            f"dx: {describe(relation['dx_um'])}\n"
-            f"dy: {describe(relation['dy_um'])}"
+            f"Target: {target_port}\n\n"
+            f"{x_label}: {describe(relation['dx_um'])}\n"
+            f"{y_label}: {describe(relation['dy_um'])}"
         )
 
     def edit_placement(self, dx, dy):
@@ -984,6 +1001,7 @@ class Session:
             relation["target_port"],
             dx,
             dy,
+            kind=relation.get("kind", "ports"),
         )
 
     def remove_placement(self):
@@ -1078,17 +1096,13 @@ class Session:
                 # Calcular primero la referencia.
                 visit(reference_id)
 
-                transform, dx, dy = self.placement_transform(
+                transform, dx, dy = self.relation_transform(
                     instances[reference_id],
-                    relation["reference_port"],
                     instances[instance_id],
-                    relation["target_port"],
-                    relation["dx_um"],
-                    relation["dy_um"],
+                    relation,
                     transform_a=transforms[reference_id],
                     transform_b=transforms[instance_id],
                 )
-
                 transforms[instance_id] = transform
                 offsets[instance_id] = (dx, dy)
                 order.append(instance_id)
@@ -1106,3 +1120,104 @@ class Session:
         ]
 
         return updates, offsets
+
+    def placement_bbox(self, item, transform):
+        cell = self.layout.cell(item["instance"].cell_index)
+        box = cell.dbbox()
+
+        if box.empty():
+            raise RuntimeError("Cannot place a component with no geometry.")
+
+        return pya.DPolygon(box).transformed(transform).bbox()
+
+    def right_of_transform(
+        self, a, b, gap, dy, transform_a=None, transform_b=None
+    ):
+        gap = self.resolve_offset(gap)
+        dy = self.resolve_offset(dy)
+
+        if gap < 0:
+            raise ValueError("The edge gap must be nonnegative.")
+
+        if transform_a is None:
+            transform_a = a["instance"].dcplx_trans
+
+        if transform_b is None:
+            transform_b = b["instance"].dcplx_trans
+
+        box_a = self.placement_bbox(a, transform_a)
+        box_b = self.placement_bbox(b, transform_b)
+
+        center_a_y = (box_a.bottom + box_a.top) / 2
+        center_b_y = (box_b.bottom + box_b.top) / 2
+
+        requested_x = (
+            transform_b.disp.x + box_a.right + gap - box_b.left
+        )
+        requested_y = (
+            transform_b.disp.y + center_a_y + dy - center_b_y
+        )
+
+        # Redondear hacia arriba para no reducir la separación.
+        grid_position = requested_x / self.grid_um
+        nearest = round(grid_position)
+
+        if math.isclose(
+            grid_position, nearest, rel_tol=0, abs_tol=1e-9
+        ):
+            x = nearest * self.grid_um
+        else:
+            x = math.ceil(grid_position) * self.grid_um
+
+        y = self.dbu_to_um(self.snap_um_to_dbu(requested_y))
+
+        transform = pya.DCplxTrans(
+            transform_b.mag,
+            transform_b.angle,
+            transform_b.is_mirror(),
+            x,
+            y,
+        )
+
+        actual_gap = (
+            box_b.left + x - transform_b.disp.x - box_a.right
+        )
+        actual_dy = (
+            center_b_y + y - transform_b.disp.y - center_a_y
+        )
+
+        return transform, actual_gap, actual_dy
+
+    def relation_transform(
+        self, a, b, relation, transform_a=None, transform_b=None
+    ):
+        kind = relation.get("kind", "ports")
+
+        if kind == "ports":
+            return self.placement_transform(
+                a,
+                relation["reference_port"],
+                b,
+                relation["target_port"],
+                relation["dx_um"],
+                relation["dy_um"],
+                transform_a=transform_a,
+                transform_b=transform_b,
+            )
+
+        if kind == "right_of":
+            return self.right_of_transform(
+                a,
+                b,
+                relation["dx_um"],
+                relation["dy_um"],
+                transform_a=transform_a,
+                transform_b=transform_b,
+            )
+
+        raise RuntimeError(f"Unknown placement kind: {kind}")
+
+    def place_right_of(self, a, b, gap, dy=0):
+        return self.place_by_ports(
+            a, None, b, None, gap, dy, kind="right_of"
+        )

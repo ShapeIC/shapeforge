@@ -3,6 +3,56 @@ from shapeforge.session import Session
 
 _actions = []
 _session = None
+
+def place_right_of():
+    def execute(session):
+        candidates = session.placement_candidates()
+        labels = [item["label"] for item in candidates]
+
+        choice = pya.InputDialog.ask_item(
+            "ShapeForge — Place Right Of",
+            "Reference A: B will be placed to its right.",
+            labels,
+            0,
+        )
+        if choice is None:
+            return
+
+        index_a = labels.index(choice)
+        a = candidates[index_a]
+        b = candidates[1 - index_a]
+
+        gap_text = pya.InputDialog.ask_string(
+            "ShapeForge — Place Right Of",
+            "Edge gap (µm): number or parameter name:",
+            "5",
+        )
+        if gap_text is None:
+            return
+
+        gap = session.parse_offset(gap_text)
+
+        dy_text = pya.InputDialog.ask_string(
+            "ShapeForge — Place Right Of",
+            "Center Y offset (µm); 0 aligns centers:",
+            "0",
+        )
+        if dy_text is None:
+            return
+
+        dy = session.parse_offset(dy_text)
+
+        actual_gap, actual_dy = session.place_right_of(a, b, gap, dy)
+
+        pya.MessageBox.info(
+            "ShapeForge — Placement",
+            f"Edge gap = {actual_gap:.6f} µm\n"
+            f"Center Y offset = {actual_dy:.6f} µm",
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
+
 def placement_info():
     def execute(session):
         pya.MessageBox.info(
@@ -18,9 +68,14 @@ def edit_placement():
     def execute(session):
         _, relation = session.selected_placement_target()
 
+        is_right_of = relation.get("kind", "ports") == "right_of"
+
+        x_label = "Edge gap" if is_right_of else "dx"
+        y_label = "Center Y offset" if is_right_of else "dy"
+
         dx_text = pya.InputDialog.ask_string(
             "ShapeForge — Edit Placement",
-            "dx (µm): number or parameter name:",
+            f"{x_label} (µm): number or parameter name:",
             str(relation["dx_um"]),
         )
         if dx_text is None:
@@ -30,7 +85,7 @@ def edit_placement():
 
         dy_text = pya.InputDialog.ask_string(
             "ShapeForge — Edit Placement",
-            "dy (µm): number or parameter name:",
+            f"{y_label} (µm): number or parameter name:",
             str(relation["dy_um"]),
         )
         if dy_text is None:
@@ -43,8 +98,8 @@ def edit_placement():
         pya.MessageBox.info(
             "ShapeForge — Placement",
             f"Applied port offset:\n"
-            f"dx = {actual_dx:.6f} µm\n"
-            f"dy = {actual_dy:.6f} µm",
+            f"{x_label} = {actual_dx:.6f} µm\n"
+            f"{y_label} = {actual_dy:.6f} µm",
             pya.MessageBox.Ok,
         )
 
@@ -576,3 +631,15 @@ def start():
         )
 
         _actions.append(action)
+
+    action = pya.Action()
+    action.title = "Place Right Of..."
+    action.on_triggered = place_right_of
+
+    menu.insert_item(
+        "shapeforge_menu.end",
+        "place_right_of",
+        action,
+    )
+
+    _actions.append(action)
