@@ -235,9 +235,10 @@ class Session:
             * self.grid_dbu
         )
 
-    def transformed_ports(self, instance, component):
+    def transformed_ports(self, instance, component, transform=None):
         """Return port coordinates in the instance's parent cell."""
-        transform = instance.dcplx_trans
+        if transform is None:
+            transform = instance.dcplx_trans
         result = []
 
         for port in component.ports:
@@ -561,33 +562,6 @@ class Session:
         if a["id"] == b["id"]:
             raise RuntimeError("A and B must be different instances.")
 
-        instances = self.placement_instances()
-
-        # Por ahora, A debe ser una referencia libre.
-        if a["instance"].property("shapeforge.placement") is not None:
-            raise RuntimeError(
-                "Placement chains are not supported yet: "
-                "A already has a placement relation."
-            )
-
-        # B tampoco puede convertirse en destino si otras relaciones
-        # ya la utilizan como referencia.
-        for item in instances.values():
-            raw = item["instance"].property("shapeforge.placement")
-
-            if raw is not None:
-                relation = json.loads(raw)
-
-                if relation["reference_id"] == b["id"]:
-                    raise RuntimeError(
-                        "Placement chains are not supported yet: "
-                        "another instance depends on B."
-                    )
-
-        transform, actual_dx, actual_dy = self.placement_transform(
-            a, port_a, b, port_b, dx, dy
-        )
-
         relation = {
             "version": 1,
             "reference_id": a["id"],
@@ -596,7 +570,17 @@ class Session:
             "dx_um": dx,
             "dy_um": dy,
         }
+
         serialized = json.dumps(relation, allow_nan=False)
+
+        # Validar y calcular con la relación propuesta,
+        # sin guardarla todavía.
+        updates, offsets = self.placement_plan(
+            replacement=(b["id"], relation)
+        )
+
+        instances = self.placement_instances()
+        target = instances[b["id"]]["instance"]
 
         view = self.cellview.view()
         self.hide_ports()
@@ -604,8 +588,10 @@ class Session:
         view.transaction("ShapeForge: define placement")
 
         try:
-            b["instance"].dcplx_trans = transform
-            b["instance"].set_property(
+            for instance, transform in updates:
+                instance.dcplx_trans = transform
+
+            target.set_property(
                 "shapeforge.placement",
                 serialized,
             )
@@ -613,21 +599,38 @@ class Session:
             view.commit()
 
         view.zoom_fit()
-        return actual_dx, actual_dy
+        return offsets[b["id"]]
 
-    def placement_transform(self, a, port_a, b, port_b, dx, dy):
+    def placement_transform(
+        self,
+        a,
+        port_a,
+        b,
+        port_b,
+        dx,
+        dy,
+        transform_a=None,
+        transform_b=None,
+    ):
         dx = self.resolve_offset(dx)
         dy = self.resolve_offset(dy)
+
+        if transform_a is None:
+            transform_a = a["instance"].dcplx_trans
+
+        if transform_b is None:
+            transform_b = b["instance"].dcplx_trans
+
         ports_a = {
             port["name"]: port
             for port in self.transformed_ports(
-                a["instance"], a["component"]
+                a["instance"], a["component"], transform_a
             )
         }
         ports_b = {
             port["name"]: port
             for port in self.transformed_ports(
-                b["instance"], b["component"]
+                b["instance"], b["component"], transform_b
             )
         }
 
@@ -637,24 +640,22 @@ class Session:
         ax, ay = ports_a[port_a]["center"]
         bx, by = ports_b[port_b]["center"]
 
-        transform = b["instance"].dcplx_trans
-
-        requested_x = transform.disp.x + ax + dx - bx
-        requested_y = transform.disp.y + ay + dy - by
+        requested_x = transform_b.disp.x + ax + dx - bx
+        requested_y = transform_b.disp.y + ay + dy - by
 
         x = self.dbu_to_um(self.snap_um_to_dbu(requested_x))
         y = self.dbu_to_um(self.snap_um_to_dbu(requested_y))
 
         new_transform = pya.DCplxTrans(
-            transform.mag,
-            transform.angle,
-            transform.is_mirror(),
+            transform_b.mag,
+            transform_b.angle,
+            transform_b.is_mirror(),
             x,
             y,
         )
 
-        actual_dx = bx + x - transform.disp.x - ax
-        actual_dy = by + y - transform.disp.y - ay
+        actual_dx = bx + x - transform_b.disp.x - ax
+        actual_dy = by + y - transform_b.disp.y - ay
 
         return new_transform, actual_dx, actual_dy
 
@@ -696,54 +697,7 @@ class Session:
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
 
-        instances = self.placement_instances()
-        relations = {}
-
-        for instance_id, item in instances.items():
-            raw = item["instance"].property("shapeforge.placement")
-
-            if raw is not None:
-                relation = json.loads(raw)
-
-                if relation.get("version") != 1:
-                    raise RuntimeError("Unsupported placement version.")
-
-                relations[instance_id] = relation
-
-        # Calcular y validar todo antes de modificar el layout.
-        updates = []
-
-        for target_id, relation in relations.items():
-            reference_id = relation["reference_id"]
-
-            if reference_id not in instances:
-                raise RuntimeError(
-                    f"Missing reference instance: {reference_id}"
-                )
-
-            if reference_id in relations:
-                raise RuntimeError(
-                    "Placement chains or cycles are not supported yet."
-                )
-
-            a = instances[reference_id]
-            b = instances[target_id]
-
-            if a["component"] is None or b["component"] is None:
-                raise RuntimeError(
-                    "A placement component is unavailable in this session."
-                )
-
-            transform, _, _ = self.placement_transform(
-                a,
-                relation["reference_port"],
-                b,
-                relation["target_port"],
-                relation["dx_um"],
-                relation["dy_um"],
-            )
-
-            updates.append((b["instance"], transform))
+        updates, _ = self.placement_plan()
 
         if not updates:
             return 0
@@ -1046,3 +1000,109 @@ class Session:
             target["instance"].delete_property("shapeforge.placement")
         finally:
             view.commit()
+
+    def placement_plan(self, replacement=None):
+        """
+        Calculate all placements without modifying KLayout.
+
+        replacement: optional (target_id, proposed_relation).
+        """
+        instances = self.placement_instances()
+        relations = {}
+
+        for instance_id, item in instances.items():
+            raw = item["instance"].property("shapeforge.placement")
+
+            if raw is not None:
+                relation = json.loads(raw)
+
+                if relation.get("version") != 1:
+                    raise RuntimeError("Unsupported placement version.")
+
+                relations[instance_id] = relation
+
+        if replacement is not None:
+            target_id, relation = replacement
+
+            if target_id not in instances:
+                raise RuntimeError("The target instance no longer exists.")
+
+            relations[target_id] = relation
+
+        # Validar referencias antes de recorrer las dependencias.
+        for target_id, relation in relations.items():
+            reference_id = relation["reference_id"]
+
+            if reference_id not in instances:
+                raise RuntimeError(
+                    f"Missing reference instance: {reference_id}"
+                )
+
+            for instance_id in (reference_id, target_id):
+                if instances[instance_id]["component"] is None:
+                    raise RuntimeError(
+                        f"Unavailable component for instance: {instance_id}"
+                    )
+
+        transforms = {
+            instance_id: item["instance"].dcplx_trans
+            for instance_id, item in instances.items()
+        }
+
+        visiting = set()
+        completed = set()
+        path = []
+        order = []
+        offsets = {}
+
+        def visit(instance_id):
+            if instance_id in completed:
+                return
+
+            if instance_id in visiting:
+                start = path.index(instance_id)
+                cycle = path[start:] + [instance_id]
+
+                raise RuntimeError(
+                    "Placement cycle detected:\n" + " -> ".join(cycle)
+                )
+
+            visiting.add(instance_id)
+            path.append(instance_id)
+
+            relation = relations.get(instance_id)
+
+            if relation is not None:
+                reference_id = relation["reference_id"]
+
+                # Calcular primero la referencia.
+                visit(reference_id)
+
+                transform, dx, dy = self.placement_transform(
+                    instances[reference_id],
+                    relation["reference_port"],
+                    instances[instance_id],
+                    relation["target_port"],
+                    relation["dx_um"],
+                    relation["dy_um"],
+                    transform_a=transforms[reference_id],
+                    transform_b=transforms[instance_id],
+                )
+
+                transforms[instance_id] = transform
+                offsets[instance_id] = (dx, dy)
+                order.append(instance_id)
+
+            path.pop()
+            visiting.remove(instance_id)
+            completed.add(instance_id)
+
+        for target_id in sorted(relations):
+            visit(target_id)
+
+        updates = [
+            (instances[instance_id]["instance"], transforms[instance_id])
+            for instance_id in order
+        ]
+
+        return updates, offsets
