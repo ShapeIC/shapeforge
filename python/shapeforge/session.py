@@ -130,6 +130,70 @@ class Session:
         view.zoom_fit()
         return instance
 
+    def selected_primitive_instance(self):
+        self.validate()
+        selection = [obj for obj in self.cellview.view().object_selection
+                     if obj.cv_index == self.cellview.index()]
+        if len(selection) != 1:
+            raise RuntimeError("Select exactly one primitive instance.")
+        obj = selection[0]
+        if not obj.is_cell_inst() or obj.top != self.cell.cell_index() or len(obj.path) != 1:
+            raise RuntimeError("Select a direct primitive instance in the working cell.")
+        instance = obj.inst()
+        if instance.is_regular_array() or instance.size() != 1:
+            raise RuntimeError("Instance arrays are not supported.")
+        instance_id = instance.property("shapeforge.instance_id")
+        if not instance_id:
+            raise RuntimeError("The selected instance has no ShapeForge ID.")
+        if sum(other.property("shapeforge.instance_id") == instance_id
+               for other in self.cell.each_inst()) != 1:
+            raise RuntimeError("Duplicate instance ID. Run Keep Selected Instance ID first.")
+        component_id = self.component_id_for_instance(instance)
+        recipe = self.component_recipes.get(component_id)
+        if recipe is None:
+            raw = self.layout.cell(instance.cell_index).property("shapeforge.component_recipe")
+            recipe = None if raw is None else json.loads(raw)
+        if recipe is None or recipe.get("provider") != "shapeic-cellkit" or component_id not in self.components:
+            raise RuntimeError("The selected instance needs a recorded CellKit recipe and linked component.")
+        return instance, recipe
+
+    def edit_primitive_parameters(self, geometry):
+        """Replace only the selected instance's component; keep its identity and transform."""
+        instance, recipe = self.selected_primitive_instance()
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        from shapeforge.project import _geometry_signature
+        old_id = self.component_id_for_instance(instance)
+        old_source = self.components[old_id]
+        old_cell = self.layout.cell(instance.cell_index)
+        if _geometry_signature(old_cell, self.layout.dbu) != _geometry_signature(old_source.kdb_cell, self.layout.dbu):
+            raise RuntimeError("This component was edited manually. Its recipe cannot preserve those edits.")
+        generated = generate_cellkit(recipe["primitive"], geometry, pdk=recipe["pdk"], options=recipe["options"])
+        if generated.recipe == recipe and generated.component is old_source:
+            return False
+        component_id = str(uuid4())
+        serialized = json.dumps(generated.recipe, allow_nan=False)
+        view = self.cellview.view()
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: edit primitive parameters")
+        try:
+            target = self.layout.create_cell(f"SF_{recipe['primitive']}_{component_id[:8]}")
+            target.copy_tree(generated.component.kdb_cell)
+            target.set_property("shapeforge.component_id", component_id)
+            target.set_property("shapeforge.component_recipe", serialized)
+            # Repoint the existing instance, preserving its transform, ID,
+            # placement and every other instance property. Shared source cells
+            # and recipes stay alive so undo/redo can restore either variant.
+            instance.cell_index = target.cell_index()
+            instance.set_property("shapeforge.component_id", component_id)
+        finally:
+            view.commit()
+        self.components[component_id] = generated.component
+        self.component_recipes[component_id] = generated.recipe
+        view.add_missing_layers()
+        return True
+
     def selection_info(self):
         self.validate()
 
