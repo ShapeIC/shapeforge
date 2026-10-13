@@ -3,6 +3,7 @@ import math
 import os
 from uuid import uuid4
 from shapeforge.components import generate_cellkit
+from shapeforge.parameters import parameter_definition, references, resolve_parameters, resolve_value
 
 import json
 
@@ -838,16 +839,9 @@ class Session:
 
         name = name.strip()
 
-        if not name.isidentifier():
-            raise ValueError(
-                "Use a valid parameter name, for example: spacing."
-            )
-
-        if not math.isfinite(value_um):
-            raise ValueError("The parameter value must be finite.")
-
         parameters = self.parameters()
-        parameters[name] = float(value_um)
+        parameters[name] = parameter_definition(value_um)
+        resolve_parameters(parameters)
         serialized = json.dumps(parameters, allow_nan=False)
 
         view = self.cellview.view()
@@ -863,24 +857,65 @@ class Session:
             view.commit()
 
     def resolve_offset(self, value):
-        """Resolve a numeric offset or a parameter name, in µm."""
-        if isinstance(value, str):
-            parameters = self.parameters()
+        """Resolve a numeric value or safe arithmetic expression, in µm."""
+        return resolve_value(value, self.parameters())
 
-            if value not in parameters:
-                raise ValueError(f"Unknown parameter: {value}")
+    def resolved_parameters(self):
+        return resolve_parameters(self.parameters())
 
-            result = float(parameters[value])
-        else:
-            result = float(value)
+    def parameter_usages(self, name):
+        """Find active references before removing a parameter."""
+        usages = []
+        for other, value in self.parameters().items():
+            if other != name and name in references(value):
+                usages.append(f"parameter {other}")
+        objects = list(self.cell.each_inst())
+        for layer in self.layout.layer_indexes():
+            objects.extend(self.cell.shapes(layer).each())
+        for obj in objects:
+            identity = obj.property("shapeforge.instance_id") or obj.property("shapeforge.object_id") or "object"
+            raw = obj.property("shapeforge.placement")
+            if raw is not None:
+                relation = json.loads(raw)
+                for key in ("dx_um", "dy_um"):
+                    if name in references(relation[key]):
+                        usages.append(f"{identity}: placement {key}")
+            raw = obj.property("shapeforge.box")
+            if raw is not None:
+                definition = json.loads(raw)
+                for axis, dimension in (("x", "width_um"), ("y", "height_um")):
+                    if not definition.get(f"{axis}_extents") and name in references(definition[dimension]):
+                        usages.append(f"{identity}: {dimension}")
+                    center = definition.get(f"{axis}_center")
+                    if center is not None and not isinstance(center, dict) and name in references(center):
+                        usages.append(f"{identity}: {axis} center")
+                for ref in self.box_position_references(definition):
+                    if name in references(ref.get("offset_um", 0)):
+                        usages.append(f"{identity}: box reference offset")
+        return sorted(set(usages))
 
-        if not math.isfinite(result):
-            raise ValueError("The offset must be finite.")
-
-        return result
+    def delete_parameter(self, name):
+        self.validate()
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        parameters = self.parameters()
+        if name not in parameters:
+            raise ValueError(f"Unknown parameter: {name}")
+        usages = self.parameter_usages(name)
+        if usages:
+            raise ValueError(f"Cannot delete parameter {name}; used by:\n" + "\n".join(usages))
+        del parameters[name]
+        resolve_parameters(parameters)
+        view = self.cellview.view()
+        view.cancel()
+        view.transaction(f"ShapeForge: delete parameter {name}")
+        try:
+            self.cell.set_property("shapeforge.parameters", json.dumps(parameters, allow_nan=False))
+        finally:
+            view.commit()
 
     def parse_offset(self, text):
-        """Accept a number or an existing parameter name."""
+        """Accept a number or a safe arithmetic expression."""
         text = text.strip()
 
         try:

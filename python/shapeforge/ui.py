@@ -9,6 +9,15 @@ from shapeforge.project import prepare_project, save_project as write_project
 
 _actions = []
 _session = None
+_parameter_panel = None
+
+
+def show_parameters():
+    global _parameter_panel
+    if _parameter_panel is None or _parameter_panel.dock._destroyed():
+        from shapeforge.parameter_panel import ParameterPanel
+        _parameter_panel = ParameterPanel(pya.Application.instance().main_window(), lambda: _session)
+    _parameter_panel.show()
 
 
 def save_project():
@@ -390,7 +399,7 @@ def set_parameter():
         parameters = _session.parameters()
 
         existing = "\n".join(
-            f"{name} = {value:g} µm"
+            f"{name} = {value} µm"
             for name, value in sorted(parameters.items())
         )
 
@@ -405,11 +414,10 @@ def set_parameter():
 
         name = name.strip()
 
-        value = pya.InputDialog.ask_double(
+        value = pya.InputDialog.ask_string(
             "ShapeForge — Parameter",
-            f"Value of {name} (µm):",
-            parameters.get(name, 10.0),
-            6,
+            f"Definition of {name} (µm), number or expression (+, -, *):",
+            str(parameters.get(name, 10.0)),
         )
         if value is None:
             return
@@ -979,6 +987,12 @@ def start():
 
     _actions.append(action)
 
+    action = pya.Action()
+    action.title = "Parameters Panel"
+    action.on_triggered = show_parameters
+    menu.insert_item("shapeforge_menu.end", "parameters_panel", action)
+    _actions.append(action)
+
     for name, title, callback in [
         ("save_project", "Save Project...", save_project),
         ("open_project", "Open Project...", open_project),
@@ -988,6 +1002,8 @@ def start():
         action.on_triggered = callback
         menu.insert_item("shapeforge_menu.end", name, action)
         _actions.append(action)
+
+    show_parameters()
 
     action = pya.Action()
     action.title = "Session Info"

@@ -10,9 +10,10 @@ import pya
 
 from shapeforge.components import reconstruct_component
 from shapeforge.session import Session
+from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 1
+VERSION = 2
 
 
 class ProjectError(ValueError):
@@ -37,17 +38,19 @@ def _number(value, where, positive=False):
         raise ProjectError(f"{where}: must be positive.")
 
 
-def _offset(value, parameters, where):
-    if isinstance(value, str):
-        if value not in parameters:
-            raise ProjectError(f"{where}: unknown parameter '{value}'.")
-    else:
-        _number(value, where)
+def _offset(value, parameters, where, version=2):
+    if version == 1 and isinstance(value, str) and not value.isidentifier():
+        raise ProjectError(f"{where}: arithmetic expressions require project version 2.")
+    try:
+        resolve_value(value, parameters)
+    except ValueError as error:
+        message = str(error)
+        raise ProjectError(f"{where}: {message[:1].lower() + message[1:]}") from error
 
 
 def _version(value, where):
-    if type(value) is not int or value != VERSION:
-        raise ProjectError(f"{where}: unsupported version {value!r}; supported version is {VERSION}.")
+    if type(value) is not int or value != 1:
+        raise ProjectError(f"{where}: unsupported version {value!r}; supported version is 1.")
 
 
 def _recipe(recipe, where):
@@ -86,7 +89,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    _version(document.get("version"), "Project format")
+    if type(document.get("version")) is not int or document["version"] not in (1, 2):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 and 2.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -106,10 +110,12 @@ def validate_document(document):
     parameters = document["parameters"]
     if not isinstance(parameters, dict):
         raise ProjectError("parameters must be an object.")
-    for name, value in parameters.items():
-        if not name.isidentifier():
-            raise ProjectError(f"Invalid parameter name: {name!r}.")
-        _number(value, f"parameter {name}")
+    try:
+        if document["version"] == 1 and any(isinstance(value, str) for value in parameters.values()):
+            raise ValueError("Parameter formulas require project version 2.")
+        resolve_parameters(parameters)
+    except ValueError as error:
+        raise ProjectError(str(error)) from error
     for key in ("components", "instances", "boxes"):
         if not isinstance(document[key], list):
             raise ProjectError(f"{key} must be an array.")
@@ -183,7 +189,7 @@ def validate_document(document):
                 raise ProjectError(f"Missing reference object: {relation['reference_id']}.")
             dependencies[object_id].add(relation["reference_id"])
             for key in ("dx_um", "dy_um"):
-                _offset(relation[key], parameters, f"placement.{key}")
+                _offset(relation[key], parameters, f"placement.{key}", document["version"])
             if relation_kind == "ports":
                 for key in ("reference_port", "target_port"):
                     _string(relation[key], f"placement.{key}")
@@ -221,11 +227,11 @@ def validate_document(document):
                     if isinstance(center, dict):
                         references.append(center)
                     else:
-                        _offset(center, parameters, f"{axis}_center")
+                        _offset(center, parameters, f"{axis}_center", document["version"])
                 if extents is None:
                     if dimension not in definition:
                         raise ProjectError(f"Missing box {dimension}.")
-                    _offset(definition[dimension], parameters, dimension)
+                    _offset(definition[dimension], parameters, dimension, document["version"])
                 else:
                     # Only the active axis definition is evaluated.
                     if relation is not None:
@@ -244,7 +250,7 @@ def validate_document(document):
                     dependencies[object_id].add(reference["reference_id"])
                     if reference["anchor"] not in anchors:
                         raise ProjectError(f"Invalid {axis} extent anchor.")
-                    _offset(reference.get("offset_um", 0), parameters, "extent.offset_um")
+                    _offset(reference.get("offset_um", 0), parameters, "extent.offset_um", document["version"])
                     if reference["anchor"] == "port":
                         _string(reference.get("port"), "extent.port")
                         if objects.get(reference["reference_id"], (None,))[0] != "instance":
@@ -317,7 +323,7 @@ def snapshot(session):
         info = session.layout.get_info(layer_index)
         for shape in session.cell.shapes(layer_index).each():
             if shape.property("shapeforge.route") is not None:
-                unsupported.append("basic routing (not supported by project format v1)")
+                unsupported.append("basic routing (not supported by the project format)")
                 continue
             definition = _property(shape, "shapeforge.box")
             object_id = shape.property("shapeforge.object_id")
@@ -335,7 +341,7 @@ def snapshot(session):
         raise ProjectError("Project was not saved because it contains:\n" + "\n".join(sorted(set(unsupported))))
     pdks = {entry["recipe"]["pdk"] for entry in components.values() if "pdk" in entry["recipe"]}
     if len(pdks) > 1:
-        raise ProjectError("Project format v1 supports one PDK per project.")
+        raise ProjectError("The project format supports one PDK per project.")
     info = _property(session.cell, "shapeforge.project") or {"name": session.cell.name, "description": ""}
     info["name"] = session.cell.name
     pdk = session.cell.property("shapeforge.pdk") or next(iter(pdks), None)
