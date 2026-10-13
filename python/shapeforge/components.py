@@ -7,6 +7,7 @@ import json
 import math
 import tomllib
 from typing import get_type_hints
+from shapeforge.parameters import resolve_value
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,32 @@ def geometry_fields():
     """Discover the public geometry contract without a per-primitive argument list."""
     from shapeic_cellkit import PrimitiveGeometry
     return fields(PrimitiveGeometry)
+
+
+def resolve_geometry(geometry, parameters):
+    """Numeric dimensions are SI; expressions use the project's µm values."""
+    from shapeic_cellkit import PrimitiveGeometry
+    expected = {field.name for field in geometry_fields()}
+    if not isinstance(geometry, dict) or set(geometry) != expected:
+        raise ValueError(f"CellKit geometry fields must be: {', '.join(sorted(expected))}.")
+    types = get_type_hints(PrimitiveGeometry)
+    values = dict(geometry)
+    for name, value in geometry.items():
+        if not isinstance(value, str):
+            if types[name] is int and type(value) is not int:
+                raise ValueError(f"CellKit geometry {name} must be an integer.")
+            if types[name] is float and (type(value) not in (int, float) or not math.isfinite(value)):
+                raise ValueError(f"CellKit geometry {name} must be a finite number.")
+            continue
+        value = resolve_value(value, parameters)
+        if types[name] is int:
+            if not value.is_integer():
+                raise ValueError(f"CellKit geometry {name} must evaluate to an integer.")
+            value = int(value)
+        elif name.endswith("_m"):
+            value *= 1e-6
+        values[name] = value
+    return PrimitiveGeometry(**values)
 
 
 def available_primitives(catalog):
@@ -137,19 +164,57 @@ def reconstruct_component(recipe):
     elif recipe["provider"] == "shapeic-cellkit":
         generated = generate_cellkit(recipe["primitive"], recipe["geometry"],
                                     recipe["pdk"], recipe["options"])
+    elif recipe["provider"] == "external-python":
+        from shapeforge.external import generate_external
+        generated = generate_external(recipe, recipe["arguments"])
     else:
         raise ValueError(f"Unknown component provider: {recipe['provider']}")
     warnings = []
     for key in ("implementation_digest", "technology_digest", "technology_revision",
                 "layout_policy"):
         if key in recipe and recipe[key] != generated.recipe.get(key):
-            warnings.append(f"{recipe.get('primitive', 'test_block')}: {key} differs from the saved recipe.")
+            warnings.append(f"{recipe.get('primitive', recipe.get('function', 'test_block'))}: {key} differs from the saved recipe.")
     saved, current = recipe.get("versions", {}), generated.recipe.get("versions", {})
     for package in sorted(set(saved) | set(current)):
         if saved.get(package) != current.get(package):
-            warnings.append(f"{recipe.get('primitive', 'test_block')}: {package} "
+            warnings.append(f"{recipe.get('primitive', recipe.get('function', 'test_block'))}: {package} "
                             f"saved={saved.get(package, 'unavailable')}, installed={current.get(package, 'unavailable')}.")
     return generated, warnings
+
+
+def generate_inputs(recipe, values, parameters):
+    """Generate a variant from provider-specific literals and safe bindings."""
+    if recipe["provider"] == "external-python":
+        from shapeforge.external import generate_external
+        return generate_external(recipe, values, parameters)
+    return generate_cellkit(recipe["primitive"], resolve_geometry(values, parameters),
+                           recipe["pdk"], recipe["options"])
+
+
+def input_definition(values, provider):
+    if provider == "external-python":
+        return {"version": 2, "values": dict(values)} if any(isinstance(v, dict) for v in values.values()) else None
+    return {"version": 1, "values": dict(values)} if any(isinstance(v, str) for v in values.values()) else None
+
+
+def validate_input_definition(definition, recipe, parameters):
+    if not isinstance(definition, dict) or set(definition) != {"version", "values"}:
+        raise ValueError("Invalid primitive input definition.")
+    if recipe["provider"] == "external-python" and type(definition["version"]) is int and definition["version"] == 2:
+        from shapeforge.external import resolve_arguments
+        return resolve_arguments(definition["values"], recipe["parameter_types"], parameters)
+    if recipe["provider"] == "shapeic-cellkit" and type(definition["version"]) is int and definition["version"] == 1:
+        return resolve_geometry(definition["values"], parameters)
+    raise ValueError("Unsupported primitive input definition version or provider.")
+
+
+def input_expressions(definition):
+    for name, value in definition["values"].items():
+        if definition["version"] == 2:
+            if isinstance(value, dict):
+                yield name, value["expression"]
+        else:
+            yield name, value
 
 def test_block() -> gf.Component:
     """Create a 10 × 5 µm block with two electrical ports."""

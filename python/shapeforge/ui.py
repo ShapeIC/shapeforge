@@ -12,6 +12,94 @@ _session = None
 _parameter_panel = None
 
 
+def load_external_libraries():
+    from shapeforge.external import CONFIG_KEY, configure_libraries
+    window = pya.Application.instance().main_window()
+    raw = window.get_config(CONFIG_KEY)
+    if raw:
+        configure_libraries(json.loads(raw))
+
+
+def external_libraries():
+    from shapeforge.external import CONFIG_KEY, libraries, register_library
+    def execute(session):
+        name = pya.InputDialog.ask_string("ShapeForge — External Libraries", "Library name (Python identifier):", "external")
+        if name is None:
+            return
+        root = pya.FileDialog.ask_existing_dir("ShapeForge — Trusted Python Library", "")
+        if not root:
+            return
+        register_library(name.strip(), root, session.pdk)
+        pya.Application.instance().main_window().set_config(CONFIG_KEY, json.dumps(libraries()))
+    run_session_action(execute)
+
+
+def ask_external_arguments(recipe, previous, session):
+    import inspect
+    from shapeforge.external import generator_specs, resolve_arguments
+    specs = generator_specs(recipe)  # Validate every annotation before prompting.
+    types = {name: spec["type"] for name, spec in specs.items()}
+    values = {}
+    for name, spec in specs.items():
+        kind = spec["type"]
+        default = previous.get(name, spec["default"])
+        if kind == "bool":
+            answer = pya.InputDialog.ask_item("ShapeForge — External PCell", name + " (bool):",
+                                            ["false", "true"], 1 if default is True else 0)
+            if answer is None:
+                return
+            values[name] = answer == "true"
+            continue
+        text = "" if default is inspect.Parameter.empty else (
+            default["expression"] if isinstance(default, dict) else str(default))
+        hint = "literal text" if kind == "str" else "native units; number or project expression"
+        while True:
+            answer = pya.InputDialog.ask_string("ShapeForge — " + recipe["function"], f"{name} ({kind}; {hint}):", text)
+            if answer is None:
+                return
+            try:
+                if kind == "str":
+                    value = answer
+                else:
+                    try:
+                        value = int(answer.strip()) if kind == "int" else float(answer.strip())
+                    except ValueError:
+                        value = {"expression": answer.strip()}
+                resolve_arguments({name: value}, {name: kind}, session.parameters())
+                values[name] = value
+                break
+            except (ValueError, OverflowError) as error:
+                pya.MessageBox.warning("ShapeForge", str(error), pya.MessageBox.Ok)
+                text = answer
+    resolve_arguments(values, types, session.parameters())
+    return values
+
+
+def insert_external_pcell():
+    from shapeforge.external import available_generators, libraries
+    def execute(session):
+        names = sorted(name for name, info in libraries().items() if info["pdk"] == session.pdk)
+        if not names:
+            raise ValueError("No external libraries registered for this PDK. Use External Libraries… first.")
+        library = pya.InputDialog.ask_item("ShapeForge — External PCell", "Library:", names, 0)
+        if library is None:
+            return
+        generators = available_generators(library)
+        if not generators:
+            raise ValueError("This library has no public Python generator functions.")
+        file = pya.InputDialog.ask_item("ShapeForge — External PCell", "Python file:", sorted(generators), 0)
+        if file is None:
+            return
+        function = pya.InputDialog.ask_item("ShapeForge — External PCell", "Function:", generators[file], 0)
+        if function is None:
+            return
+        reference = {"library": library, "file": file, "function": function, "pdk": session.pdk}
+        values = ask_external_arguments(reference, {}, session)
+        if values is not None:
+            session.insert_external_pcell(reference, values)
+    run_session_action(execute)
+
+
 def show_parameters():
     global _parameter_panel
     if _parameter_panel is None or _parameter_panel.dock._destroyed():
@@ -685,7 +773,7 @@ def session_info():
         f"ShapeForge grid: {_session.grid_um} µm",
         pya.MessageBox.Ok,
     )
-def ask_primitive_geometry(primitive, previous, limits):
+def ask_primitive_geometry(primitive, previous, limits, session=None):
     from shapeic_cellkit import PrimitiveGeometry
     types = get_type_hints(PrimitiveGeometry)
     values = {}
@@ -701,16 +789,17 @@ def ask_primitive_geometry(primitive, previous, limits):
         hint = ""
         if limits is not None:
             if field.name == "nf" and limits.required_nf is not None:
-                default = limits.required_nf
+                if field.name not in previous:
+                    default = limits.required_nf
                 hint = f"; required: {limits.required_nf}"
             elif field.name == "nf" and limits.nf_multiple_of is not None:
                 hint = f"; multiple of {limits.nf_multiple_of}"
             elif field.name == "finger_width_m" and limits.max_finger_width_m is not None:
                 hint = f"; maximum: {limits.max_finger_width_m / scale:g} µm"
-        text = "" if default is MISSING else f"{default / scale:g}"
+        text = "" if default is MISSING else (default if isinstance(default, str) else f"{default / scale:g}")
         while True:
             answer = pya.InputDialog.ask_string(
-                f"ShapeForge — {primitive}", f"{label} (positive {'integer' if kind is int else 'number'}{hint}):", text)
+                f"ShapeForge — {primitive}", f"{label} (number or project expression{hint}):", text)
             if answer is None:
                 return
             try:
@@ -720,8 +809,17 @@ def ask_primitive_geometry(primitive, previous, limits):
                 values[field.name] = number if kind is int else number * scale
                 break
             except (ValueError, OverflowError):
-                pya.MessageBox.warning("ShapeForge", f"Enter a positive {'integer' if kind is int else 'finite number'} for {label}.", pya.MessageBox.Ok)
-                text = answer
+                try:
+                    if session is None:
+                        raise ValueError("Enter a number.")
+                    number = session.resolve_offset(answer.strip())
+                    if number <= 0 or (kind is int and not number.is_integer()):
+                        raise ValueError(f"{label} must evaluate to a positive {'integer' if kind is int else 'number'}.")
+                    values[field.name] = answer.strip()
+                    break
+                except ValueError as error:
+                    pya.MessageBox.warning("ShapeForge", str(error), pya.MessageBox.Ok)
+                    text = answer
     return values
 
 
@@ -740,7 +838,7 @@ def insert_primitive():
         previous = next((recipe["geometry"] for recipe in reversed(list(session.component_recipes.values()))
                          if recipe.get("provider") == "shapeic-cellkit"
                          and recipe.get("primitive") == primitive and recipe.get("pdk") == session.pdk), {})
-        values = ask_primitive_geometry(primitive, previous, primitives[primitive].geometry_limits)
+        values = ask_primitive_geometry(primitive, previous, primitives[primitive].geometry_limits, session)
         if values is None:
             return
         session.insert_primitive(primitive, values, pdk=session.pdk)
@@ -767,9 +865,14 @@ def insert_test_instance():
 
 def edit_primitive_parameters():
     def execute(session):
-        _, recipe = session.selected_primitive_instance()
-        descriptor = cellkit_catalog(recipe["pdk"]).primitive(recipe["primitive"])
-        values = ask_primitive_geometry(recipe["primitive"], recipe["geometry"], descriptor.geometry_limits)
+        instance, recipe = session.selected_primitive_instance()
+        raw = instance.property("shapeforge.geometry_parameters")
+        previous = recipe.get("geometry", recipe.get("arguments")) if raw is None else json.loads(raw)["values"]
+        if recipe["provider"] == "external-python":
+            values = ask_external_arguments(recipe, previous, session)
+        else:
+            descriptor = cellkit_catalog(recipe["pdk"]).primitive(recipe["primitive"])
+            values = ask_primitive_geometry(recipe["primitive"], previous, descriptor.geometry_limits, session)
         if values is not None:
             session.edit_primitive_parameters(values)
     run_session_action(execute)
@@ -954,6 +1057,10 @@ def box_info():
 
 def start():
     mw = pya.Application.instance().main_window()
+    try:
+        load_external_libraries()
+    except Exception as error:
+        pya.MessageBox.warning("ShapeForge — External Libraries", str(error), pya.MessageBox.Ok)
     menu = mw.menu()
 
     # Create ShapeForge menu
@@ -1034,6 +1141,16 @@ def start():
     action.on_triggered = edit_primitive_parameters
     menu.insert_item("shapeforge_menu.end", "edit_primitive_parameters", action)
     _actions.append(action)
+
+    for name, title, callback in [
+        ("external_libraries", "External Libraries...", external_libraries),
+        ("insert_external_pcell", "Insert External PCell...", insert_external_pcell),
+    ]:
+        action = pya.Action()
+        action.title = title
+        action.on_triggered = callback
+        menu.insert_item("shapeforge_menu.end", name, action)
+        _actions.append(action)
 
     action = pya.Action()
     action.title = "Selection Info"

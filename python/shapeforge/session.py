@@ -2,7 +2,8 @@ import pya
 import math
 import os
 from uuid import uuid4
-from shapeforge.components import generate_cellkit
+from shapeforge.components import (generate_cellkit, resolve_geometry, generate_inputs,
+                                  input_definition, validate_input_definition, input_expressions)
 from shapeforge.parameters import parameter_definition, references, resolve_parameters, resolve_value
 
 import json
@@ -66,7 +67,29 @@ class Session:
         recorded_pdk = self.cell.property("shapeforge.pdk")
         if recorded_pdk is not None and recorded_pdk != pdk:
             raise ValueError(f"This project uses PDK {recorded_pdk}; cannot insert a {pdk} primitive.")
-        generated = generate_cellkit(primitive, geometry, pdk=pdk)
+        generated = generate_cellkit(primitive, resolve_geometry(geometry, self.parameters()), pdk=pdk)
+        return self.insert_generated(generated, geometry)
+
+    def insert_external_pcell(self, reference, arguments):
+        from shapeforge.external import generate_external
+        self.validate()
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        reference = {**reference, "pdk": self.pdk}
+        generated = generate_external(reference, arguments, self.parameters())
+        # Fill optional defaults so the persisted binding covers every argument.
+        arguments = {**generated.recipe["arguments"], **arguments}
+        return self.insert_generated(generated, arguments)
+
+    def insert_generated(self, generated, geometry):
+        self.validate()
+        layout, view = self.layout, self.cellview.view()
+        if not layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        recorded = self.cell.property("shapeforge.pdk")
+        if recorded is not None and recorded != generated.recipe["pdk"]:
+            raise ValueError("Component PDK differs from the project PDK.")
+        primitive = generated.recipe.get("primitive", generated.recipe.get("function", "component"))
         source = generated.component
         recipe = generated.recipe
 
@@ -119,6 +142,7 @@ class Session:
                 "shapeforge.component_id",
                 component_id,
             )
+            self.set_geometry_definition(instance, geometry, recipe["provider"])
         finally:
             view.commit()
 
@@ -154,8 +178,8 @@ class Session:
         if recipe is None:
             raw = self.layout.cell(instance.cell_index).property("shapeforge.component_recipe")
             recipe = None if raw is None else json.loads(raw)
-        if recipe is None or recipe.get("provider") != "shapeic-cellkit" or component_id not in self.components:
-            raise RuntimeError("The selected instance needs a recorded CellKit recipe and linked component.")
+        if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python") or component_id not in self.components:
+            raise RuntimeError("The selected instance needs a recorded generator recipe and linked component.")
         return instance, recipe
 
     def edit_primitive_parameters(self, geometry):
@@ -169,8 +193,11 @@ class Session:
         old_cell = self.layout.cell(instance.cell_index)
         if _geometry_signature(old_cell, self.layout.dbu) != _geometry_signature(old_source.kdb_cell, self.layout.dbu):
             raise RuntimeError("This component was edited manually. Its recipe cannot preserve those edits.")
-        generated = generate_cellkit(recipe["primitive"], geometry, pdk=recipe["pdk"], options=recipe["options"])
-        if generated.recipe == recipe and generated.component is old_source:
+        generated = generate_inputs(recipe, geometry, self.parameters())
+        new_definition = input_definition(geometry, recipe["provider"])
+        raw = instance.property("shapeforge.geometry_parameters")
+        old_definition = None if raw is None else json.loads(raw)
+        if generated.recipe == recipe and generated.component is old_source and new_definition == old_definition:
             return False
         component_id = str(uuid4())
         serialized = json.dumps(generated.recipe, allow_nan=False)
@@ -179,7 +206,7 @@ class Session:
         view.cancel()
         view.transaction("ShapeForge: edit primitive parameters")
         try:
-            target = self.layout.create_cell(f"SF_{recipe['primitive']}_{component_id[:8]}")
+            target = self.layout.create_cell(f"SF_{recipe.get('primitive', recipe.get('function', 'component'))}_{component_id[:8]}")
             target.copy_tree(generated.component.kdb_cell)
             target.set_property("shapeforge.component_id", component_id)
             target.set_property("shapeforge.component_recipe", serialized)
@@ -188,12 +215,68 @@ class Session:
             # and recipes stay alive so undo/redo can restore either variant.
             instance.cell_index = target.cell_index()
             instance.set_property("shapeforge.component_id", component_id)
+            self.set_geometry_definition(instance, geometry, recipe["provider"])
         finally:
             view.commit()
         self.components[component_id] = generated.component
         self.component_recipes[component_id] = generated.recipe
         view.add_missing_layers()
         return True
+
+    @staticmethod
+    def geometry_definition(geometry):
+        return input_definition(geometry, "shapeic-cellkit")
+
+    def set_geometry_definition(self, instance, geometry, provider="shapeic-cellkit"):
+        definition = input_definition(geometry, provider)
+        if definition is None:
+            instance.delete_property("shapeforge.geometry_parameters")
+        else:
+            instance.set_property("shapeforge.geometry_parameters", json.dumps(definition, allow_nan=False))
+
+    def primitive_update_plan(self):
+        objects = self.placement_objects()  # Validate identities before generating.
+        updates = {}
+        from shapeforge.project import _geometry_signature
+        for object_id, item in objects.items():
+            if item["type"] != "instance":
+                continue
+            instance = item["instance"]
+            raw = instance.property("shapeforge.geometry_parameters")
+            if raw is None:
+                continue
+            definition = json.loads(raw)
+            component_id = self.component_id_for_instance(instance)
+            recipe = self.component_recipes.get(component_id)
+            if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python"):
+                raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")
+            validate_input_definition(definition, recipe, self.parameters())
+            generated = generate_inputs(recipe, definition["values"], self.parameters())
+            if generated.recipe == recipe and generated.component is self.components[component_id]:
+                continue
+            if _geometry_signature(self.layout.cell(instance.cell_index), self.layout.dbu) != _geometry_signature(self.components[component_id].kdb_cell, self.layout.dbu):
+                raise ValueError(f"Instance {object_id} was edited manually; its recipe cannot preserve those edits.")
+            updates[object_id] = generated
+        return updates
+
+    def regeneration_plan(self):
+        components = self.primitive_update_plan()
+        updates, _ = self.placement_plan(component_replacements=components)
+        return components, updates
+
+    def apply_regeneration_plan(self, components, updates):
+        for object_id, generated in components.items():
+            component_id = str(uuid4())
+            target = self.layout.create_cell(f"SF_{generated.recipe.get('primitive', generated.recipe.get('function', 'component'))}_{component_id[:8]}")
+            target.copy_tree(generated.component.kdb_cell)
+            target.set_property("shapeforge.component_id", component_id)
+            target.set_property("shapeforge.component_recipe", json.dumps(generated.recipe, allow_nan=False))
+            instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == object_id)
+            instance.cell_index = target.cell_index()
+            instance.set_property("shapeforge.component_id", component_id)
+            self.components[component_id] = generated.component
+            self.component_recipes[component_id] = generated.recipe
+        self.apply_placement_updates(updates)
 
     def selection_info(self):
         self.validate()
@@ -253,6 +336,16 @@ class Session:
                         "   No linked gdsfactory component."
                     )
                     continue
+
+                raw = instance.property("shapeforge.geometry_parameters")
+                if raw is not None:
+                    recipe = self.component_recipes.get(component_id, {})
+                    for field, definition in json.loads(raw)["values"].items():
+                        effective = recipe.get("geometry", recipe.get("arguments", {})).get(field)
+                        unit = " µm" if recipe.get("provider") == "shapeic-cellkit" and field.endswith("_m") else ""
+                        if effective is not None and unit:
+                            effective *= 1e6
+                        lines.append(f"   {field}: {definition}; rendered={effective}{unit}")
 
                 for port in self.transformed_ports(instance, source):
                     local_x, local_y = port["local_center"]
@@ -720,19 +813,20 @@ class Session:
         self.validate()
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
-        updates, _ = self.placement_plan()
-        if not updates:
+        components, updates = self.regeneration_plan()
+        if not updates and not components:
             return 0
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
         view.transaction("ShapeForge: regenerate dimensions and placement")
         try:
-            self.apply_placement_updates(updates)
+            self.apply_regeneration_plan(components, updates)
         finally:
             view.commit()
+        view.add_missing_layers()
         view.zoom_fit()
-        return len(updates)
+        return len({item["id"] for item, _ in updates} | set(components))
 
     def keep_selected_instance_id(self):
         self.validate()
@@ -874,6 +968,11 @@ class Session:
             objects.extend(self.cell.shapes(layer).each())
         for obj in objects:
             identity = obj.property("shapeforge.instance_id") or obj.property("shapeforge.object_id") or "object"
+            raw = obj.property("shapeforge.geometry_parameters")
+            if raw is not None:
+                for field, value in input_expressions(json.loads(raw)):
+                    if name in references(value):
+                        usages.append(f"{identity}: primitive {field}")
             raw = obj.property("shapeforge.placement")
             if raw is not None:
                 relation = json.loads(raw)
@@ -1040,9 +1139,12 @@ class Session:
         finally:
             view.commit()
 
-    def placement_plan(self, replacement=None, box_replacement=None):
+    def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None):
         """Plan dimensions, referenced extents and placement without mutation."""
         objects = self.placement_objects(box_replacement=box_replacement)
+        for object_id, generated in (component_replacements or {}).items():
+            objects[object_id]["component"] = generated.component
+            objects[object_id]["local_box"] = generated.component.kdb_cell.dbbox()
         relations = {}
         for object_id, item in objects.items():
             raw = item["object"].property("shapeforge.placement")
@@ -1123,7 +1225,7 @@ class Session:
         return updates, offsets
 
     def placement_bbox(self, item, transform):
-        if item["type"] == "box":
+        if "local_box" in item:
             box = item["local_box"]
         else:
             box = self.layout.cell(item["instance"].cell_index).dbbox()
@@ -1652,7 +1754,8 @@ class Session:
         # No iterators are active while mutating KLayout objects.
         for item, transform in updates:
             if item["type"] == "instance":
-                item["instance"].dcplx_trans = transform
+                instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == item["id"])
+                instance.dcplx_trans = transform
             else:
                 x = self.um_to_dbu(transform.disp.x)
                 y = self.um_to_dbu(transform.disp.y)

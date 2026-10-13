@@ -8,12 +8,12 @@ import tempfile
 
 import pya
 
-from shapeforge.components import reconstruct_component
+from shapeforge.components import reconstruct_component, validate_input_definition
 from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 2
+VERSION = 4
 
 
 class ProjectError(ValueError):
@@ -81,6 +81,34 @@ def _recipe(recipe, where):
         for package, value in recipe["versions"].items():
             _string(package, f"{where}.versions package")
             _string(value, f"{where}.versions.{package}")
+    elif provider == "external-python":
+        _object(recipe, ("provider", "library", "file", "function", "pdk", "arguments",
+                         "parameter_types", "implementation_digest", "versions"), where)
+        for key in ("library", "file", "function", "pdk", "implementation_digest"):
+            _string(recipe[key], f"{where}.{key}")
+        if not recipe["library"].isidentifier() or not recipe["function"].isidentifier() or recipe["function"].startswith("_"):
+            raise ProjectError(f"{where}: invalid external library or function identifier.")
+        file = Path(recipe["file"])
+        if file.is_absolute() or ".." in file.parts or file.suffix != ".py":
+            raise ProjectError(f"{where}: external source must be a relative Python file.")
+        if not isinstance(recipe["parameter_types"], dict):
+            raise ProjectError(f"{where}: parameter_types must be an object.")
+        for name, kind in recipe["parameter_types"].items():
+            _string(name, "external argument name")
+            if not name.isidentifier() or kind not in ("float", "int", "bool", "str"):
+                raise ProjectError(f"{where}: invalid external argument type.")
+        from shapeforge.external import resolve_arguments
+        try:
+            if any(isinstance(v, dict) for v in recipe["arguments"].values()):
+                raise ValueError("Saved recipes must contain effective literals.")
+            resolve_arguments(recipe["arguments"], recipe["parameter_types"], {})
+        except (ValueError, AttributeError) as error:
+            raise ProjectError(f"{where}: {error}") from error
+        if not isinstance(recipe["versions"], dict):
+            raise ProjectError(f"{where}: versions must be an object.")
+        for package, value in recipe["versions"].items():
+            _string(package, "versions package")
+            _string(value, "versions value")
     else:
         raise ProjectError(f"{where}: unknown provider {provider!r}.")
 
@@ -89,8 +117,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in (1, 2):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 and 2.")
+    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1, 2, 3 and 4.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -127,12 +155,15 @@ def validate_document(document):
             raise ProjectError(f"Duplicate component ID: {entry['id']}.")
         components[entry["id"]] = entry["recipe"]
         _recipe(entry["recipe"], f"component {entry['id']}")
+        if entry["recipe"]["provider"] == "external-python" and document["version"] < 4:
+            raise ProjectError("External Python recipes require project version 4.")
         pdk = entry["recipe"].get("pdk")
         if pdk is not None and pdk != environment["pdk"]:
             raise ProjectError("Component PDK differs from the project PDK.")
     objects = {}
     for kind, rows, keys in (
-        ("instance", document["instances"], ("id", "component_id", "transform", "placement")),
+        ("instance", document["instances"], ("id", "component_id", "transform", "placement") +
+         (("geometry_parameters",) if document["version"] >= 3 else ())),
         ("box", document["boxes"], ("id", "layer", "box_dbu", "definition", "placement")),
     ):
         for entry in rows:
@@ -145,6 +176,13 @@ def validate_document(document):
                 _string(entry["component_id"], "instance.component_id")
                 if entry["component_id"] not in components:
                     raise ProjectError(f"Missing component: {entry['component_id']}.")
+                geometry_parameters = entry.get("geometry_parameters")
+                if geometry_parameters is not None:
+                    _object(geometry_parameters, ("version", "values"), "geometry_parameters")
+                    try:
+                        validate_input_definition(geometry_parameters, components[entry["component_id"]], parameters)
+                    except Exception as error:
+                        raise ProjectError(f"Instance {entry['id']} geometry: {error}") from error
                 transform = _object(entry["transform"], ("mag", "angle", "mirror", "x_um", "y_um"), "transform")
                 for key in ("mag", "angle", "x_um", "y_um"):
                     _number(transform[key], f"transform.{key}", positive=key == "mag")
@@ -318,6 +356,7 @@ def snapshot(session):
                           "mirror": transform.is_mirror(), "x_um": transform.disp.x,
                           "y_um": transform.disp.y},
             "placement": _property(instance, "shapeforge.placement"),
+            "geometry_parameters": _property(instance, "shapeforge.geometry_parameters"),
         })
     for layer_index in session.layout.layer_indexes():
         info = session.layout.get_info(layer_index)
@@ -355,7 +394,7 @@ def snapshot(session):
         "boxes": sorted(boxes, key=lambda entry: entry["id"]),
     }
     validate_document(document)
-    session.placement_plan()  # Missing ports, bad dimensions and incompatible constraints.
+    session.regeneration_plan()  # Validate future component geometry and dependent placement without mutation.
     # The snapshot must not expose mutable recipes owned by the provider cache.
     return json.loads(json.dumps(document, allow_nan=False))
 
@@ -438,6 +477,12 @@ def prepare_project(path):
         with Path(path).open(encoding="utf-8") as handle:
             document = json.load(handle, parse_constant=_reject_constant, object_pairs_hook=_unique_keys)
         validate_document(document)
+        # Locate all external dependencies before invoking any generator.
+        from shapeforge.external import library_root, source_path
+        for entry in document["components"]:
+            recipe = entry["recipe"]
+            if recipe["provider"] == "external-python":
+                source_path(library_root(recipe["library"], recipe["pdk"]), recipe["file"])
         layout = pya.Layout()
         layout.dbu = document["environment"]["dbu_um"]
         cell = layout.create_cell(document["project"]["name"])
@@ -468,6 +513,8 @@ def prepare_project(path):
             instance = cell.insert(pya.DCellInstArray(target.cell_index(), transform))
             instance.set_property("shapeforge.instance_id", entry["id"])
             instance.set_property("shapeforge.component_id", component_id)
+            if entry.get("geometry_parameters") is not None:
+                instance.set_property("shapeforge.geometry_parameters", json.dumps(entry["geometry_parameters"], allow_nan=False))
             if entry["placement"] is not None:
                 instance.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
         for entry in document["boxes"]:
@@ -478,8 +525,8 @@ def prepare_project(path):
             shape.set_property("shapeforge.box", json.dumps(entry["definition"], allow_nan=False))
             if entry["placement"] is not None:
                 shape.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
-        updates, _ = session.placement_plan()
-        session.apply_placement_updates(updates)
+        components, updates = session.regeneration_plan()
+        session.apply_regeneration_plan(components, updates)
         return PreparedProject(session, sorted(set(warnings)), path)
     except ProjectError:
         raise
