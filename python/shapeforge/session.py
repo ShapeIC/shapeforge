@@ -1,5 +1,6 @@
 import pya
 import math
+import os
 from uuid import uuid4
 from shapeforge.components import generate_cellkit
 
@@ -10,7 +11,6 @@ class Session:
         self.cellview = cellview
         self.layout = cellview.layout()
         self.cell = cell
-        self._test_component = None
 
         if not math.isfinite(grid_um) or grid_um <= 0:
             raise ValueError("The grid must be a positive finite value.")
@@ -42,6 +42,17 @@ class Session:
                 "The working cell was deleted. Create a new PCell."
             )    
     def insert_test_instance(self):
+        return self.insert_primitive("simplediffpair", {
+            "length_m": 0.4e-6, "finger_width_m": 5.0e-6, "nf": 4,
+        })
+
+    @property
+    def pdk(self):
+        self.validate()
+        return self.cell.property("shapeforge.pdk") or os.environ.get("SHAPEFORGE_PDK", "ihp-sg13g2")
+
+    def insert_primitive(self, primitive, geometry, pdk=None):
+        """Generate a catalog primitive and insert it with its effective recipe."""
         self.validate()
 
         layout = self.layout
@@ -50,13 +61,13 @@ class Session:
         if not layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
 
-        if self._test_component is None:
-            self._test_component = generate_cellkit("simplediffpair", {
-                "length_m": 0.4e-6, "finger_width_m": 5.0e-6, "nf": 4,
-            })
-
-        source = self._test_component.component
-        recipe = self._test_component.recipe
+        pdk = pdk or self.pdk
+        recorded_pdk = self.cell.property("shapeforge.pdk")
+        if recorded_pdk is not None and recorded_pdk != pdk:
+            raise ValueError(f"This project uses PDK {recorded_pdk}; cannot insert a {pdk} primitive.")
+        generated = generate_cellkit(primitive, geometry, pdk=pdk)
+        source = generated.component
+        recipe = generated.recipe
 
         component_id = str(uuid4())
         gap = self.snap_um_to_dbu(5.0)
@@ -69,8 +80,9 @@ class Session:
         if bbox.empty():
             x = 0
         else:
+            source_left = self.um_to_dbu(source.kdb_cell.dbbox().left)
             x = (
-                math.ceil((bbox.right + gap) / self.grid_dbu)
+                math.ceil((bbox.right + gap - source_left) / self.grid_dbu)
                 * self.grid_dbu
             )
 
@@ -79,7 +91,7 @@ class Session:
 
         try:
             self.cell.set_property("shapeforge.pdk", recipe["pdk"])
-            target = layout.create_cell("SF_TEST_BLOCK")
+            target = layout.create_cell(f"SF_{primitive}_{component_id[:8]}")
 
             # Copiar geometría y jerarquía al layout de la sesión.
             target.copy_tree(source.kdb_cell)
@@ -116,6 +128,7 @@ class Session:
         view.add_missing_layers()
         view.max_hier()
         view.zoom_fit()
+        return instance
 
     def selection_info(self):
         self.validate()

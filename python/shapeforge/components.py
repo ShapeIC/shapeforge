@@ -50,6 +50,20 @@ def geometry_fields():
     return fields(PrimitiveGeometry)
 
 
+def available_primitives(catalog):
+    """List catalog primitives with a provider for the selected PDK."""
+    from shapeic_cellkit.errors import ManifestValidationError, ProviderNotFoundError
+    result = {}
+    for name in catalog.primitive_names():
+        try:
+            result[name] = catalog.primitive(name)
+        except (ProviderNotFoundError, ManifestValidationError):
+            # Some catalog entries describe logical cells only and have no
+            # physical descriptor/render contract yet (e.g. commonsource).
+            continue
+    return result
+
+
 def generate_cellkit(primitive, geometry, pdk="ihp-sg13g2", options=None):
     try:
         from shapeic_cellkit import PrimitiveGeometry
@@ -74,7 +88,10 @@ def generate_cellkit(primitive, geometry, pdk="ihp-sg13g2", options=None):
         if kind is float:
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError(f"CellKit geometry {name} must be a finite number.")
-            values[name] = float(value)
+            # Unit conversion can yield 4.9999999999999996e-6 for 5 µm.
+            # Normalize floating point noise before rendering and recording
+            # effective values, so equivalent inputs share a generator cache.
+            values[name] = float(format(value, ".15g"))
     geometry = PrimitiveGeometry(**values)
     catalog = cellkit_catalog(pdk)
     descriptor = catalog.primitive(primitive)

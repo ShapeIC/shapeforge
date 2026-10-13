@@ -1,6 +1,10 @@
 import json
+import math
+from dataclasses import MISSING
+from typing import get_type_hints
 import pya
 from shapeforge.session import Session
+from shapeforge.components import available_primitives, cellkit_catalog, geometry_fields
 from shapeforge.project import prepare_project, save_project as write_project
 
 _actions = []
@@ -673,6 +677,62 @@ def session_info():
         f"ShapeForge grid: {_session.grid_um} µm",
         pya.MessageBox.Ok,
     )
+def insert_primitive():
+    def execute(session):
+        session.validate()
+        catalog = cellkit_catalog(session.pdk)
+        primitives = available_primitives(catalog)
+        names = sorted(primitives)
+        if not names:
+            raise RuntimeError(f"No primitive PCell providers are available for PDK {session.pdk}.")
+        primitive = pya.InputDialog.ask_item(
+            "ShapeForge — Insert Primitive", f"Primitive ({session.pdk}):", names, 0)
+        if primitive is None:
+            return
+        from shapeic_cellkit import PrimitiveGeometry
+        types = get_type_hints(PrimitiveGeometry)
+        previous = next((recipe["geometry"] for recipe in reversed(list(session.component_recipes.values()))
+                         if recipe.get("provider") == "shapeic-cellkit"
+                         and recipe.get("primitive") == primitive and recipe.get("pdk") == session.pdk), {})
+        limits = primitives[primitive].geometry_limits
+        values = {}
+        for field in geometry_fields():
+            kind = types[field.name]
+            if kind not in (int, float):
+                raise ValueError(f"Unsupported CellKit geometry field type: {field.name} ({kind}).")
+            scale = 1e-6 if field.name.endswith("_m") else 1
+            label = field.name[:-2].replace("_", " ") + " (µm)" if scale != 1 else field.name
+            default = previous.get(field.name, field.default)
+            if default is MISSING and field.default_factory is not MISSING:
+                default = field.default_factory()
+            hint = ""
+            if limits is not None:
+                if field.name == "nf" and limits.required_nf is not None:
+                    default = limits.required_nf
+                    hint = f"; required: {limits.required_nf}"
+                elif field.name == "nf" and limits.nf_multiple_of is not None:
+                    hint = f"; multiple of {limits.nf_multiple_of}"
+                elif field.name == "finger_width_m" and limits.max_finger_width_m is not None:
+                    hint = f"; maximum: {limits.max_finger_width_m / scale:g} µm"
+            text = "" if default is MISSING else f"{default / scale:g}"
+            while True:
+                answer = pya.InputDialog.ask_string(
+                    f"ShapeForge — {primitive}", f"{label} (positive {'integer' if kind is int else 'number'}{hint}):", text)
+                if answer is None:
+                    return
+                try:
+                    number = int(answer.strip()) if kind is int else float(answer.strip())
+                    if not math.isfinite(number) or number <= 0:
+                        raise ValueError()
+                    values[field.name] = number if kind is int else number * scale
+                    break
+                except (ValueError, OverflowError):
+                    pya.MessageBox.warning("ShapeForge", f"Enter a positive {'integer' if kind is int else 'finite number'} for {label}.", pya.MessageBox.Ok)
+                    text = answer
+        session.insert_primitive(primitive, values, pdk=session.pdk)
+    run_session_action(execute)
+
+
 def insert_test_instance():
     if _session is None:
         pya.MessageBox.warning(
@@ -868,12 +928,12 @@ def start():
     _actions.append(action) 
 
     action = pya.Action()
-    action.title = "Insert Test Instance"
-    action.on_triggered = insert_test_instance
+    action.title = "Insert Primitive..."
+    action.on_triggered = insert_primitive
 
     menu.insert_item(
         "shapeforge_menu.end",
-        "insert_test_instance",
+        "insert_primitive",
         action,
     )
 
