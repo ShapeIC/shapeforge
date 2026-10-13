@@ -200,25 +200,39 @@ def validate_document(document):
             definition = entry["definition"]
             if not isinstance(definition, dict):
                 raise ProjectError("Box definition must be an object.")
-            _version(definition.get("version"), "Box definition")
-            if set(definition) - {"version", "width_um", "height_um", "x_extents", "y_extents"}:
+            if type(definition.get("version")) is not int or definition["version"] not in (1, 2):
+                raise ProjectError("Unsupported box definition version; supported versions are 1 and 2.")
+            if set(definition) - {"version", "width_um", "height_um", "x_extents", "y_extents", "x_center", "y_center"}:
                 raise ProjectError("Unknown box definition fields.")
             for axis, dimension, anchors in (
                 ("x", "width_um", ("left", "center", "right", "port")),
                 ("y", "height_um", ("bottom", "center", "top", "port")),
             ):
                 extents = definition.get(f"{axis}_extents")
+                references = []
+                if f"{axis}_center" in definition:
+                    if definition["version"] != 2:
+                        raise ProjectError("Parametric box centers require box definition version 2.")
+                    if extents is not None:
+                        raise ProjectError(f"{axis.upper()} center and two referenced extents cannot coexist.")
+                    if relation is not None:
+                        raise ProjectError("Parametric box center cannot coexist with its placement relation.")
+                    center = definition[f"{axis}_center"]
+                    if isinstance(center, dict):
+                        references.append(center)
+                    else:
+                        _offset(center, parameters, f"{axis}_center")
                 if extents is None:
                     if dimension not in definition:
                         raise ProjectError(f"Missing box {dimension}.")
                     _offset(definition[dimension], parameters, dimension)
-                    continue
-                # The UI retains the previous dimension when switching to
-                # extents. Only the active axis definition is evaluated.
-                if relation is not None:
-                    raise ProjectError("Referenced box extents cannot coexist with its placement relation.")
-                _object(extents, ("min", "max"), f"{axis}_extents")
-                for reference in extents.values():
+                else:
+                    # Only the active axis definition is evaluated.
+                    if relation is not None:
+                        raise ProjectError("Referenced box extents cannot coexist with its placement relation.")
+                    _object(extents, ("min", "max"), f"{axis}_extents")
+                    references.extend(extents.values())
+                for reference in references:
                     if not isinstance(reference, dict):
                         raise ProjectError("Extent reference must be an object.")
                     required = {"reference_id", "anchor"}

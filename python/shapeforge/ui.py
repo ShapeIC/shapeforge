@@ -786,65 +786,115 @@ def keep_selected_box_id():
 
 
 
+def choose_box_reference(session, objects, box_id, axis, end, existing=None):
+    title = "ShapeForge — Box Center" if end == "center" else "ShapeForge — Box Extents"
+    references = [item for key, item in sorted(objects.items()) if key != box_id]
+    labels = [item["label"] for item in references]
+    if not references:
+        raise RuntimeError("Insert another managed object to use as a reference.")
+    reference_ids = [item["id"] for item in references]
+    default = (reference_ids.index(existing["reference_id"])
+               if existing and existing.get("reference_id") in reference_ids else 0)
+    choice = pya.InputDialog.ask_item(
+        title, f"{axis.upper()} {end}: reference object:",
+        labels, default)
+    if choice is None:
+        return None
+    item = references[labels.index(choice)]
+    anchors = (["left", "center", "right"] if axis == "x"
+               else ["bottom", "center", "top"])
+    options = list(anchors)
+    port_options = {}
+    if item["type"] == "instance" and item["component"] is not None:
+        for port in item["component"].ports:
+            label = f"Port: {port.name}"
+            options.append(label)
+            port_options[label] = port.name
+    previous = None
+    if existing:
+        previous = (f"Port: {existing.get('port')}" if existing.get("anchor") == "port"
+                    else existing.get("anchor"))
+    default = (options.index(previous) if previous in options
+               else ({"min": 0, "max": 2}.get(end, 1)))
+    anchor = pya.InputDialog.ask_item(
+        title, f"{axis.upper()} {end}: edge or port:",
+        options, default)
+    if anchor is None:
+        return None
+    text = pya.InputDialog.ask_string(
+        title, f"{axis.upper()} {end}: offset (µm), number or parameter:",
+        str(existing.get("offset_um", 0) if existing else 0))
+    if text is None:
+        return None
+    ref = {"reference_id": item["id"], "anchor": anchor,
+           "offset_um": session.parse_offset(text)}
+    if anchor in port_options:
+        ref["anchor"] = "port"
+        ref["port"] = port_options[anchor]
+    return ref
+
+
+def choose_box_center(session, objects, box_id, axis, existing=None):
+    mode = pya.InputDialog.ask_item(
+        "ShapeForge — Box Center", f"{axis.upper()} center definition:",
+        ["Coordinate", "Reference"], 1 if isinstance(existing, dict) else 0)
+    if mode is None:
+        return None
+    if mode == "Reference":
+        return choose_box_reference(session, objects, box_id, axis, "center",
+                                    existing if isinstance(existing, dict) else None)
+    text = pya.InputDialog.ask_string(
+        "ShapeForge — Box Center", f"{axis.upper()} center (µm), number or parameter:",
+        str(existing if existing is not None and not isinstance(existing, dict) else 0))
+    return None if text is None else session.parse_offset(text)
+
+
+def define_box_center():
+    def execute(session):
+        shape, box_id, definition, objects = session.selected_box_definition()
+        for axis, dimension in (("x", "width_um"), ("y", "height_um")):
+            key = f"{axis}_center"
+            mode = pya.InputDialog.ask_item(
+                "ShapeForge — Box Center", f"{axis.upper()} center:",
+                ["Automatic", "Parametric"], 1 if key in definition else 0)
+            if mode is None:
+                return
+            if mode == "Automatic":
+                definition.pop(key, None)
+                continue
+            if definition.get(f"{axis}_extents") is not None:
+                box = shape.box
+                size = box.width() if axis == "x" else box.height()
+                text = pya.InputDialog.ask_string(
+                    "ShapeForge — Box Center",
+                    f"{axis.upper()} center replaces this axis's two extents. {dimension} (µm), number or parameter:",
+                    str(session.dbu_to_um(size)))
+                if text is None:
+                    return
+                definition[dimension] = session.parse_offset(text)
+                definition.pop(f"{axis}_extents")
+            center = choose_box_center(session, objects, box_id, axis, definition.get(key))
+            if center is None:
+                return
+            definition[key] = center
+        session.define_box_extents(definition)
+        pya.MessageBox.info("ShapeForge — Box", "Box center saved and regenerated.", pya.MessageBox.Ok)
+    run_session_action(execute)
+
+
 def define_box_extents():
     def execute(session):
         _, box_id, definition, objects = session.selected_box_definition()
-        references = [item for key, item in sorted(objects.items()) if key != box_id]
-        labels = [item["label"] for item in references]
-
-        def choose_reference(axis, end, existing):
-            if not references:
-                raise RuntimeError("Insert another managed object to use as a reference.")
-            reference_ids = [item["id"] for item in references]
-            default = (reference_ids.index(existing["reference_id"])
-                       if existing and existing.get("reference_id") in reference_ids else 0)
-            choice = pya.InputDialog.ask_item(
-                "ShapeForge — Box Extents", f"{axis.upper()} {end}: reference object:",
-                labels, default)
-            if choice is None:
-                return None
-            item = references[labels.index(choice)]
-            anchors = (["left", "center", "right"] if axis == "x"
-                       else ["bottom", "center", "top"])
-            options = list(anchors)
-            port_options = {}
-            if item["type"] == "instance" and item["component"] is not None:
-                for port in item["component"].ports:
-                    label = f"Port: {port.name}"
-                    options.append(label)
-                    port_options[label] = port.name
-            previous = None
-            if existing:
-                previous = (f"Port: {existing.get('port')}" if existing.get("anchor") == "port"
-                            else existing.get("anchor"))
-            default = (options.index(previous) if previous in options
-                       else (0 if end == "min" else 2))
-            anchor = pya.InputDialog.ask_item(
-                "ShapeForge — Box Extents", f"{axis.upper()} {end}: edge or port:",
-                options, default)
-            if anchor is None:
-                return None
-            text = pya.InputDialog.ask_string(
-                "ShapeForge — Box Extents", f"{axis.upper()} {end}: offset (µm), number or parameter:",
-                str(existing.get("offset_um", 0) if existing else 0))
-            if text is None:
-                return None
-            ref = {"reference_id": item["id"], "anchor": anchor,
-                   "offset_um": session.parse_offset(text)}
-            if anchor in port_options:
-                ref["anchor"] = "port"
-                ref["port"] = port_options[anchor]
-            return ref
-
         for axis, dimension in (("x", "width_um"), ("y", "height_um")):
             key = f"{axis}_extents"
             existing = definition.get(key)
             mode = pya.InputDialog.ask_item(
                 "ShapeForge — Box Extents", f"{axis.upper()} axis definition:",
-                ["Dimension", "Two references"], 1 if existing else 0)
+                ["Dimension", "Dimension + center", "Two references"],
+                2 if existing else (1 if f"{axis}_center" in definition else 0))
             if mode is None:
                 return
-            if mode == "Dimension":
+            if mode in ("Dimension", "Dimension + center"):
                 text = pya.InputDialog.ask_string(
                     "ShapeForge — Box Extents", f"{dimension} (µm), number or parameter:",
                     str(definition.get(dimension, 1)))
@@ -852,14 +902,23 @@ def define_box_extents():
                     return
                 definition[dimension] = session.parse_offset(text)
                 definition.pop(key, None)
+                if mode == "Dimension + center":
+                    center = choose_box_center(session, objects, box_id, axis,
+                                               definition.get(f"{axis}_center"))
+                    if center is None:
+                        return
+                    definition[f"{axis}_center"] = center
+                else:
+                    definition.pop(f"{axis}_center", None)
             else:
-                lower = choose_reference(axis, "min", existing.get("min") if existing else None)
+                lower = choose_box_reference(session, objects, box_id, axis, "min", existing.get("min") if existing else None)
                 if lower is None:
                     return
-                upper = choose_reference(axis, "max", existing.get("max") if existing else None)
+                upper = choose_box_reference(session, objects, box_id, axis, "max", existing.get("max") if existing else None)
                 if upper is None:
                     return
                 definition[key] = {"min": lower, "max": upper}
+                definition.pop(f"{axis}_center", None)
         session.define_box_extents(definition)
         pya.MessageBox.info("ShapeForge — Box", "Box extents saved and regenerated.", pya.MessageBox.Ok)
     run_session_action(execute)
@@ -1111,6 +1170,7 @@ def start():
 
     for name, title, callback in [
         ("define_box_extents", "Define Box Extents...", define_box_extents),
+        ("define_box_center", "Define Box Center...", define_box_center),
         ("box_info", "Box Info", box_info),
     ]:
         action = pya.Action()

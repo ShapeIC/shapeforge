@@ -444,7 +444,7 @@ class Session:
 
         for shape, definition in self.parametric_boxes():
             protected_ids.update(ref["reference_id"]
-                                 for ref in self.box_extent_references(definition))
+                                 for ref in self.box_position_references(definition))
             raw = shape.property("shapeforge.placement")
             if raw is not None:
                 protected_ids.add(json.loads(raw)["reference_id"])
@@ -964,14 +964,14 @@ class Session:
         for target_id, item in objects.items():
             if item["type"] == "box":
                 definition = item["definition"]
-                extent_refs = self.box_extent_references(definition)
-                if extent_refs and target_id in relations:
+                position_refs = self.box_position_references(definition)
+                if (position_refs or any(f"{axis}_center" in definition for axis in ("x", "y"))) and target_id in relations:
                     raise RuntimeError(
-                        "Box extents control position and size. Remove its "
-                        "placement relation before defining extents."
+                        "Box extents or center control its position. Remove its "
+                        "placement relation before defining extents or center."
                     )
                 dependencies[target_id].update(
-                    ref["reference_id"] for ref in extent_refs)
+                    ref["reference_id"] for ref in position_refs)
         for target_id, relation in relations.items():
             reference_id = relation["reference_id"]
             dependencies[target_id].add(reference_id)
@@ -1406,7 +1406,7 @@ class Session:
                 seen.add(box_id)
                 definition = json.loads(raw)
 
-                if definition.get("version") != 1:
+                if definition.get("version") not in (1, 2):
                     raise RuntimeError("Unsupported box definition version.")
 
                 result.append((shape, definition))
@@ -1443,10 +1443,11 @@ class Session:
 
         shape = self.selected_box()
         raw = shape.property("shapeforge.box")
-        if raw is not None and self.box_extent_references(json.loads(raw)):
+        if raw is not None and (self.box_extent_references(json.loads(raw))
+                                or any(f"{axis}_center" in json.loads(raw) for axis in ("x", "y"))):
             raise RuntimeError(
-                "This box has referenced extents. Use Define Box Extents "
-                "to edit them or switch an axis to Dimension."
+                "This box has parametric extents or center. Use Define Box Extents "
+                "to edit its dimensions and position."
             )
         new_box = self.sized_box(shape, width, height)
 
@@ -1614,14 +1615,31 @@ class Session:
                 refs.extend((extents["min"], extents["max"]))
         return refs
 
+    @staticmethod
+    def box_position_references(definition):
+        refs = Session.box_extent_references(definition)
+        refs.extend(definition[f"{axis}_center"] for axis in ("x", "y")
+                    if isinstance(definition.get(f"{axis}_center"), dict))
+        return refs
+
     def validate_box_definition(self, definition):
-        if definition.get("version") != 1:
+        if definition.get("version") not in (1, 2):
             raise RuntimeError("Unsupported box definition version.")
         for axis, dimension, allowed in (
             ("x", "width_um", ("left", "center", "right", "port")),
             ("y", "height_um", ("bottom", "center", "top", "port")),
         ):
             extents = definition.get(f"{axis}_extents")
+            if f"{axis}_center" in definition:
+                if definition["version"] != 2:
+                    raise ValueError("Parametric box centers require box definition version 2.")
+                if extents is not None:
+                    raise ValueError(f"{axis.upper()} center and two referenced extents cannot coexist.")
+                center = definition[f"{axis}_center"]
+                if isinstance(center, dict):
+                    self.validate_box_reference(center, axis, allowed)
+                else:
+                    self.resolve_offset(center)
             if extents is None:
                 if dimension not in definition:
                     raise ValueError(f"Missing {dimension}.")
@@ -1630,13 +1648,16 @@ class Session:
                 continue
             for end in ("min", "max"):
                 ref = extents[end]
-                if not isinstance(ref.get("reference_id"), str):
-                    raise ValueError("An extent reference needs an object ID.")
-                if ref.get("anchor") not in allowed:
-                    raise ValueError(f"Invalid anchor for the {axis.upper()} axis.")
-                if ref["anchor"] == "port" and not ref.get("port"):
-                    raise ValueError("A port reference needs a port name.")
-                self.resolve_offset(ref.get("offset_um", 0))
+                self.validate_box_reference(ref, axis, allowed)
+
+    def validate_box_reference(self, reference, axis, allowed):
+        if not isinstance(reference.get("reference_id"), str):
+            raise ValueError("A box reference needs an object ID.")
+        if reference.get("anchor") not in allowed:
+            raise ValueError(f"Invalid anchor for the {axis.upper()} axis.")
+        if reference["anchor"] == "port" and not reference.get("port"):
+            raise ValueError("A port reference needs a port name.")
+        self.resolve_offset(reference.get("offset_um", 0))
 
     def extent_coordinate(self, reference, axis, objects, transforms):
         reference_id = reference["reference_id"]
@@ -1686,6 +1707,17 @@ class Session:
                 x, width = lower, upper - lower
             else:
                 y, height = lower, upper - lower
+        for axis, size in (("x", width), ("y", height)):
+            if f"{axis}_center" not in definition:
+                continue
+            center = definition[f"{axis}_center"]
+            coordinate = (self.extent_coordinate(center, axis, objects, transforms)
+                          if isinstance(center, dict) else self.resolve_offset(center))
+            lower = self.snap_um_to_dbu(coordinate - self.dbu_to_um(size) / 2)
+            if axis == "x":
+                x = lower
+            else:
+                y = lower
         item["local_box"] = pya.DBox(0, 0, self.dbu_to_um(width), self.dbu_to_um(height))
         return pya.DCplxTrans(1, 0, False, self.dbu_to_um(x), self.dbu_to_um(y))
 
@@ -1701,6 +1733,8 @@ class Session:
         return shape, object_id, json.loads(raw), objects
 
     def define_box_extents(self, definition):
+        definition = dict(definition)
+        definition["version"] = 2 if any(f"{axis}_center" in definition for axis in ("x", "y")) else 1
         self.validate()
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
@@ -1735,8 +1769,20 @@ class Session:
                                  f"offset={ref.get('offset_um', 0)} µm")
             else:
                 lines.append(f"{dimension}: {definition[dimension]} µm")
+            center = definition.get(f"{axis}_center")
+            if isinstance(center, dict):
+                item = objects.get(center["reference_id"])
+                label = item["label"] if item else f"MISSING: {center['reference_id']}"
+                anchor = f"port {center['port']}" if center["anchor"] == "port" else center["anchor"]
+                lines.append(f"{axis.upper()} center: {label}, {anchor}, offset={center.get('offset_um', 0)} µm")
+            elif center is not None:
+                lines.append(f"{axis.upper()} center: {center} µm")
+            else:
+                lines.append(f"{axis.upper()} center: automatic")
         box = shape.box
         lines.append(f"Current size: {self.dbu_to_um(box.width()):g} × "
                      f"{self.dbu_to_um(box.height()):g} µm")
+        lines.append(f"Current center: ({self.dbu_to_um(box.left + box.right) / 2:g}, "
+                     f"{self.dbu_to_um(box.bottom + box.top) / 2:g}) µm")
         return "\n".join(lines)
 
