@@ -26,7 +26,7 @@ class ParameterPanel:
         layout.addWidget(pya.QLabel("Name", content))
         self.name = pya.QLineEdit(content)
         layout.addWidget(self.name)
-        layout.addWidget(pya.QLabel("Number or expression: +, -, *, parentheses", content))
+        layout.addWidget(pya.QLabel("Number or expression: +, -, *, /, floor(expression), parentheses", content))
         self.definition = pya.QLineEdit(content)
         layout.addWidget(self.definition)
         self.buttons = []

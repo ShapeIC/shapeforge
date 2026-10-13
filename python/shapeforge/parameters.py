@@ -25,7 +25,7 @@ def expression_tree(value):
     try:
         tree = ast.parse(value.strip(), mode="eval").body
     except (SyntaxError, ValueError, RecursionError) as error:
-        raise ValueError("Invalid expression. Use numbers, parameter names, +, -, * and parentheses.") from error
+        raise ValueError("Invalid expression. Use numbers, parameter names, +, -, *, /, floor(expression) and parentheses.") from error
     nodes = list(ast.walk(tree))
     if len(nodes) > 128:
         raise ValueError("The parameter expression is too complex.")
@@ -34,14 +34,20 @@ def expression_tree(value):
             _finite(node.value)
         elif isinstance(node, ast.Name):
             pass
-        elif not isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Add, ast.Sub, ast.Mult,
+        elif isinstance(node, ast.Call):
+            if (not isinstance(node.func, ast.Name) or node.func.id != "floor"
+                    or len(node.args) != 1 or node.keywords):
+                raise ValueError("Only floor(expression) with one positional argument is supported.")
+        elif not isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Add, ast.Sub, ast.Mult, ast.Div,
                                    ast.UAdd, ast.USub, ast.Load)):
-            raise ValueError("Only numbers, parameter names, +, -, * and parentheses are supported.")
+            raise ValueError("Only numbers, parameter names, +, -, *, /, floor(expression) and parentheses are supported.")
     return tree
 
 
 def references(value):
-    return {node.id for node in ast.walk(expression_tree(value)) if isinstance(node, ast.Name)}
+    nodes = list(ast.walk(expression_tree(value)))
+    functions = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
+    return {node.id for node in nodes if isinstance(node, ast.Name) and id(node) not in functions}
 
 
 def _evaluate(node, lookup):
@@ -49,6 +55,8 @@ def _evaluate(node, lookup):
         return _finite(node.value)
     if isinstance(node, ast.Name):
         return lookup(node.id)
+    if isinstance(node, ast.Call):
+        return _finite(math.floor(_evaluate(node.args[0], lookup)))
     if isinstance(node, ast.UnaryOp):
         value = _evaluate(node.operand, lookup)
         return _finite(-value if isinstance(node.op, ast.USub) else value)
@@ -57,6 +65,10 @@ def _evaluate(node, lookup):
         return _finite(left + right)
     if isinstance(node.op, ast.Sub):
         return _finite(left - right)
+    if isinstance(node.op, ast.Div):
+        if right == 0:
+            raise ValueError("Division by zero in parameter expression.")
+        return _finite(left / right)
     return _finite(left * right)
 
 

@@ -504,7 +504,7 @@ def set_parameter():
 
         value = pya.InputDialog.ask_string(
             "ShapeForge — Parameter",
-            f"Definition of {name} (µm), number or expression (+, -, *):",
+            f"Definition of {name} (µm), number or expression (+, -, *, /, floor):",
             str(parameters.get(name, 10.0)),
         )
         if value is None:
