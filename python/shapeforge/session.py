@@ -1,8 +1,7 @@
 import pya
 import math
 from uuid import uuid4
-import gdsfactory as gf
-from shapeforge.components import simplediffpair, test_block
+from shapeforge.components import generate_cellkit
 
 import json
 
@@ -28,6 +27,8 @@ class Session:
             raise ValueError("The grid must be an integer multiple of DBU.")
 
         self.components = {}
+        self.component_recipes = {}
+        self.project_path = None
         self.port_markers = []
 
     def validate(self):
@@ -49,14 +50,13 @@ class Session:
         if not layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
 
-        # PDK genérico solamente para este componente de prueba.
-        gf.gpdk.PDK.activate()
         if self._test_component is None:
-            self._test_component = simplediffpair()
+            self._test_component = generate_cellkit("simplediffpair", {
+                "length_m": 0.4e-6, "finger_width_m": 5.0e-6, "nf": 4,
+            })
 
-        source = self._test_component
-        print("Generated object:", source)
-        print("Generated type:", type(source))
+        source = self._test_component.component
+        recipe = self._test_component.recipe
 
         component_id = str(uuid4())
         gap = self.snap_um_to_dbu(5.0)
@@ -78,6 +78,7 @@ class Session:
         view.transaction("ShapeForge: insert gdsfactory component")
 
         try:
+            self.cell.set_property("shapeforge.pdk", recipe["pdk"])
             target = layout.create_cell("SF_TEST_BLOCK")
 
             # Copiar geometría y jerarquía al layout de la sesión.
@@ -88,6 +89,7 @@ class Session:
                 "shapeforge.component_id",
                 component_id,
             )
+            target.set_property("shapeforge.component_recipe", json.dumps(recipe, allow_nan=False))
 
             instance = self.cell.insert(
                 pya.CellInstArray(
@@ -108,6 +110,7 @@ class Session:
             view.commit()
 
         self.components[component_id] = source
+        self.component_recipes[component_id] = recipe
 
         self.cellview.cell = self.cell
         view.add_missing_layers()
@@ -230,10 +233,14 @@ class Session:
         if not math.isfinite(value_um):
             raise ValueError("The coordinate must be finite.")
 
-        return (
-            round(value_um / self.grid_um)
-            * self.grid_dbu
-        )
+        position = value_um / self.grid_um
+        # Transformed ports can land exactly halfway between grid points.
+        # Floating point cancellation must not flip the chosen point after
+        # another regeneration (or after reopening the same recipe).
+        half = round(position * 2) / 2
+        if math.isclose(position, half, rel_tol=0, abs_tol=1e-9):
+            position = half
+        return round(position) * self.grid_dbu
 
     def transformed_ports(self, instance, component, transform=None):
         """Return port coordinates in the instance's parent cell."""
@@ -600,8 +607,10 @@ class Session:
             )
         }
 
-        if port_a not in ports_a or port_b not in ports_b:
-            raise RuntimeError("A placement port no longer exists.")
+        if port_a not in ports_a:
+            raise RuntimeError(f"Placement reference {a['id']} has no port '{port_a}'.")
+        if port_b not in ports_b:
+            raise RuntimeError(f"Placement target {b['id']} has no port '{port_b}'.")
 
         ax, ay = ports_a[port_a]["center"]
         bx, by = ports_b[port_b]["center"]
@@ -1628,7 +1637,7 @@ class Session:
                 item["instance"], item["component"], transform)}
             port_name = reference["port"]
             if port_name not in ports:
-                raise RuntimeError(f"Missing extent port: {port_name}")
+                raise RuntimeError(f"Extent reference {reference_id} has no port '{port_name}'.")
             value = ports[port_name]["center"][0 if axis == "x" else 1]
         else:
             box = self.placement_bbox(item, transform)

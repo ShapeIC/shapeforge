@@ -1,9 +1,61 @@
 import json
 import pya
 from shapeforge.session import Session
+from shapeforge.project import prepare_project, save_project as write_project
 
 _actions = []
 _session = None
+
+
+def save_project():
+    def execute(session):
+        session.validate()
+        path = pya.FileDialog.ask_save_file_name(
+            "ShapeForge — Save Project", session.project_path or f"{session.cell.name}.shapeforge.json",
+            "ShapeForge projects (*.shapeforge.json)")
+        if not path:
+            return
+        if not path.endswith(".shapeforge.json"):
+            path += ".shapeforge.json"
+        write_project(session, path)
+        pya.MessageBox.info("ShapeForge", f"Project saved:\n{path}", pya.MessageBox.Ok)
+    run_session_action(execute)
+
+
+def open_project():
+    global _session
+    path = pya.FileDialog.ask_open_file_name(
+        "ShapeForge — Open Project", "", "ShapeForge projects (*.shapeforge.json)")
+    if not path:
+        return
+    mw = pya.Application.instance().main_window()
+    previous_view = mw.current_view_index
+    cellview = None
+    try:
+        prepared = prepare_project(path)
+        cellview = mw.create_layout(1)
+        if not cellview.layout().is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        session = prepared.attach(cellview)
+        view = cellview.view()
+        view.add_missing_layers()
+        view.max_hier()
+        view.zoom_fit()
+        if _session is not None:
+            _session.hide_ports()
+    except Exception as error:
+        if cellview is not None:
+            mw.close_current_view()
+        if previous_view >= 0:
+            mw.current_view_index = previous_view
+        pya.MessageBox.warning("ShapeForge", str(error), pya.MessageBox.Ok)
+        return
+    _session = session
+    if prepared.warnings:
+        pya.MessageBox.warning(
+            "ShapeForge — Project compatibility",
+            "Project opened with the installed dependencies:\n" + "\n".join(prepared.warnings),
+            pya.MessageBox.Ok)
 
 def make_box_parametric():
     def execute(session):
@@ -792,6 +844,16 @@ def start():
     )
 
     _actions.append(action)
+
+    for name, title, callback in [
+        ("save_project", "Save Project...", save_project),
+        ("open_project", "Open Project...", open_project),
+    ]:
+        action = pya.Action()
+        action.title = title
+        action.on_triggered = callback
+        menu.insert_item("shapeforge_menu.end", name, action)
+        _actions.append(action)
 
     action = pya.Action()
     action.title = "Session Info"
