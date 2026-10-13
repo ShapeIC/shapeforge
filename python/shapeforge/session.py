@@ -1453,3 +1453,179 @@ class Session:
         view.zoom_fit()
 
         return route_id
+
+    def selected_box(self):
+        self.validate()
+
+        view = self.cellview.view()
+        selection = [
+            obj
+            for obj in view.object_selection
+            if obj.cv_index == self.cellview.index()
+        ]
+
+        if len(selection) != 1:
+            raise RuntimeError("Select exactly one box.")
+
+        obj = selection[0]
+
+        if (
+            obj.is_cell_inst()
+            or obj.top != self.cell.cell_index()
+            or len(obj.path) != 0
+        ):
+            raise RuntimeError(
+                "Select a box directly in the working cell."
+            )
+
+        shape = obj.shape
+
+        if not shape.is_box():
+            raise RuntimeError("The selected shape must be a box.")
+
+        return shape
+
+    def parametric_boxes(self):
+        self.validate()
+
+        result = []
+        seen = set()
+
+        for layer_index in self.layout.layer_indexes():
+            for shape in self.cell.shapes(layer_index).each():
+                raw = shape.property("shapeforge.box")
+
+                if raw is None:
+                    continue
+
+                if not shape.is_box():
+                    raise RuntimeError(
+                        "A parametric box was converted to another shape type."
+                    )
+
+                box_id = shape.property("shapeforge.object_id")
+
+                if not box_id:
+                    raise RuntimeError("A parametric box has no ID.")
+
+                if box_id in seen:
+                    raise RuntimeError(
+                        "Duplicate box ID. Select the copied box "
+                        "and run Make Box Parametric to give it a new ID."
+                    )
+
+                seen.add(box_id)
+                definition = json.loads(raw)
+
+                if definition.get("version") != 1:
+                    raise RuntimeError("Unsupported box definition version.")
+
+                result.append((shape, definition))
+
+        return result
+
+    def sized_box(self, shape, width, height):
+        width_um = self.resolve_offset(width)
+        height_um = self.resolve_offset(height)
+
+        if width_um <= 0 or height_um <= 0:
+            raise ValueError("Box width and height must be positive.")
+
+        width_dbu = self.snap_um_to_dbu(width_um)
+        height_dbu = self.snap_um_to_dbu(height_um)
+
+        if min(width_dbu, height_dbu) <= 0:
+            raise ValueError("Box dimensions are too small for the grid.")
+
+        current = shape.box
+
+        return pya.Box(
+            current.left,
+            current.bottom,
+            current.left + width_dbu,
+            current.bottom + height_dbu,
+        )
+
+    def make_box_parametric(self, width, height):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        shape = self.selected_box()
+        new_box = self.sized_box(shape, width, height)
+
+        definition = {
+            "version": 1,
+            "width_um": width,
+            "height_um": height,
+        }
+        serialized = json.dumps(definition, allow_nan=False)
+
+        box_id = shape.property("shapeforge.object_id")
+
+        # Una copia puede haber heredado el ID.
+        # Aquí conservamos el de la otra figura y reasignamos el seleccionado.
+        if box_id:
+            matches = 0
+
+            for layer_index in self.layout.layer_indexes():
+                for other in self.cell.shapes(layer_index).each():
+                    if other.property("shapeforge.object_id") == box_id:
+                        matches += 1
+
+            if matches > 1:
+                box_id = None
+
+        if not box_id:
+            box_id = str(uuid4())
+
+        view = self.cellview.view()
+        view.cancel()
+        view.transaction("ShapeForge: define parametric box")
+
+        try:
+            shape.box = new_box
+            shape.set_property("shapeforge.object_id", box_id)
+            shape.set_property("shapeforge.box", serialized)
+        finally:
+            view.commit()
+
+        return (
+            self.dbu_to_um(new_box.width()),
+            self.dbu_to_um(new_box.height()),
+        )
+
+    def regenerate_boxes(self):
+        self.validate()
+
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+
+        # Calcular todo antes de modificar las figuras.
+        updates = [
+            (
+                shape,
+                self.sized_box(
+                    shape,
+                    definition["width_um"],
+                    definition["height_um"],
+                ),
+            )
+            for shape, definition in self.parametric_boxes()
+        ]
+
+        if not updates:
+            return 0
+
+        view = self.cellview.view()
+        view.cancel()
+        view.transaction("ShapeForge: regenerate boxes")
+
+        try:
+            for shape, box in updates:
+                shape.box = box
+        finally:
+            view.commit()
+
+        return len(updates)

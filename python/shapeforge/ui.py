@@ -4,6 +4,64 @@ from shapeforge.session import Session
 _actions = []
 _session = None
 
+def make_box_parametric():
+    def execute(session):
+        shape = session.selected_box()
+        raw = shape.property("shapeforge.box")
+
+        if raw is None:
+            definition = {
+                "width_um": session.dbu_to_um(shape.box.width()),
+                "height_um": session.dbu_to_um(shape.box.height()),
+            }
+        else:
+            definition = json.loads(raw)
+
+        width_text = pya.InputDialog.ask_string(
+            "ShapeForge — Parametric Box",
+            "Width (µm): number or parameter name:",
+            str(definition["width_um"]),
+        )
+        if width_text is None:
+            return
+
+        width = session.parse_offset(width_text)
+
+        height_text = pya.InputDialog.ask_string(
+            "ShapeForge — Parametric Box",
+            "Height (µm): number or parameter name:",
+            str(definition["height_um"]),
+        )
+        if height_text is None:
+            return
+
+        height = session.parse_offset(height_text)
+
+        actual_width, actual_height = session.make_box_parametric(
+            width, height
+        )
+
+        pya.MessageBox.info(
+            "ShapeForge — Parametric Box",
+            f"Width: {actual_width:.6f} µm\n"
+            f"Height: {actual_height:.6f} µm",
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
+
+
+def regenerate_boxes():
+    def execute(session):
+        count = session.regenerate_boxes()
+
+        pya.MessageBox.info(
+            "ShapeForge",
+            f"Regenerated {count} boxes.",
+            pya.MessageBox.Ok,
+        )
+
+    run_session_action(execute)
 def route_ports():
     def execute(session):
         candidates = session.placement_candidates()
@@ -804,3 +862,27 @@ def start():
     )
 
     _actions.append(action)
+
+    for name, title, callback in [
+        (
+            "make_box_parametric",
+            "Make Box Parametric...",
+            make_box_parametric,
+        ),
+        (
+            "regenerate_boxes",
+            "Regenerate Boxes",
+            regenerate_boxes,
+        ),
+    ]:
+        action = pya.Action()
+        action.title = title
+        action.on_triggered = callback
+
+        menu.insert_item(
+            "shapeforge_menu.end",
+            name,
+            action,
+        )
+
+        _actions.append(action)
