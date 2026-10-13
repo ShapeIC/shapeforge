@@ -1,3 +1,4 @@
+import json
 import pya
 from shapeforge.session import Session
 
@@ -57,7 +58,7 @@ def regenerate_boxes():
 
         pya.MessageBox.info(
             "ShapeForge",
-            f"Regenerated {count} boxes.",
+            f"Updated {count} objects (box dimensions and placement).",
             pya.MessageBox.Ok,
         )
 
@@ -123,12 +124,12 @@ def route_ports():
     run_session_action(execute)
 def place_by_edges():
     def execute(session):
-        candidates = session.placement_candidates()
+        candidates = session.placement_candidates(allow_boxes=True)
         labels = [item["label"] for item in candidates]
 
         choice = pya.InputDialog.ask_item(
             "ShapeForge — Place by Edges",
-            "Reference instance A:",
+            "Reference object A:",
             labels,
             0,
         )
@@ -201,7 +202,7 @@ def place_by_edges():
     run_session_action(execute)
 def place_right_of():
     def execute(session):
-        candidates = session.placement_candidates()
+        candidates = session.placement_candidates(allow_boxes=True)
         labels = [item["label"] for item in candidates]
 
         choice = pya.InputDialog.ask_item(
@@ -292,7 +293,7 @@ def edit_placement():
 
         pya.MessageBox.info(
             "ShapeForge — Placement",
-            f"Applied port offset:\n"
+            f"Applied placement:\n"
             f"{x_label} = {actual_dx:.6f} µm\n"
             f"{y_label} = {actual_dy:.6f} µm",
             pya.MessageBox.Ok,
@@ -403,7 +404,7 @@ def regenerate_placement():
 
         pya.MessageBox.info(
             "ShapeForge",
-            f"Regenerated {count} placement relations.",
+            f"Updated {count} objects (box dimensions and placement).",
             pya.MessageBox.Ok,
         )
     except Exception as error:
@@ -485,7 +486,7 @@ def place_by_ports():
 
         pya.MessageBox.info(
             "ShapeForge — Placement",
-            f"Applied port offset:\n"
+            f"Applied placement:\n"
             f"dx = {actual_dx:.6f} µm\n"
             f"dy = {actual_dy:.6f} µm",
             pya.MessageBox.Ok,
@@ -662,6 +663,15 @@ def selection_info():
         message,
         pya.MessageBox.Ok,
     )
+
+def keep_selected_box_id():
+    def execute(session):
+        count = session.keep_selected_box_id()
+        pya.MessageBox.info(
+            "ShapeForge", f"Assigned new IDs to {count} box copies.",
+            pya.MessageBox.Ok)
+    run_session_action(execute)
+
 
 def start():
     mw = pya.Application.instance().main_window()
@@ -886,3 +896,9 @@ def start():
         )
 
         _actions.append(action)
+    action = pya.Action()
+    action.title = "Keep Selected Box ID"
+    action.on_triggered = keep_selected_box_id
+    menu.insert_item("shapeforge_menu.end", "keep_selected_box_id", action)
+    _actions.append(action)
+

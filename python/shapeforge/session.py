@@ -1,3 +1,4 @@
+
 import pya
 import math
 from uuid import uuid4
@@ -422,6 +423,11 @@ class Session:
 
                 protected_ids.add(relation["reference_id"])
 
+        for shape, _ in self.parametric_boxes():
+            raw = shape.property("shapeforge.placement")
+            if raw is not None:
+                protected_ids.add(json.loads(raw)["reference_id"])
+
         for instance_id, group in groups.items():
             if len(group) > 1 and instance_id in protected_ids:
                 raise RuntimeError(
@@ -489,68 +495,23 @@ class Session:
 
         return component_id
 
-    def placement_candidates(self):
+    def placement_candidates(self, allow_boxes=False):
         self.validate()
-
-        view = self.cellview.view()
-        selection = [
-            obj
-            for obj in view.object_selection
-            if obj.cv_index == self.cellview.index()
-        ]
-
+        selection = [obj for obj in self.cellview.view().object_selection
+                     if obj.cv_index == self.cellview.index()]
         if len(selection) != 2:
-            raise RuntimeError("Select exactly two instances.")
-
-        candidates = []
-
-        for obj in selection:
-            if (
-                not obj.is_cell_inst()
-                or obj.top != self.cell.cell_index()
-                or len(obj.path) != 1
-            ):
-                raise RuntimeError(
-                    "Select two direct instances in the working cell."
-                )
-
-            instance = obj.inst()
-
-            if instance.size() != 1:
-                raise RuntimeError("Instance arrays are not supported.")
-
-            instance_id = instance.property("shapeforge.instance_id")
-            component_id = self.component_id_for_instance(instance)
-            component = self.components.get(component_id)
-
-            if not instance_id or component is None:
-                raise RuntimeError(
-                    "Both instances need ShapeForge IDs and components."
-                )
-
-            if not len(component.ports):
-                raise RuntimeError("Both components must have ports.")
-
-            # El ID debe ser único en toda la celda de trabajo.
-            matches = sum(
-                other.property("shapeforge.instance_id") == instance_id
-                for other in self.cell.each_inst()
-            )
-
-            if matches != 1:
-                raise RuntimeError(
-                    "Duplicate instance ID. Run Normalize Instance IDs."
-                )
-
-            cell = self.layout.cell(instance.cell_index)
-
-            candidates.append({
-                "id": instance_id,
-                "label": f"{cell.name} | {instance_id}",
-                "instance": instance,
-                "component": component,
-            })
-
+            raise RuntimeError("Select exactly two placement objects.")
+        objects = self.placement_objects()
+        candidates = [self.selected_placement_object(obj, objects)
+                      for obj in selection]
+        if candidates[0]["id"] == candidates[1]["id"]:
+            raise RuntimeError("Select two different objects.")
+        if not allow_boxes:
+            for item in candidates:
+                if item["type"] != "instance" or item["component"] is None:
+                    raise RuntimeError("Port operations require two linked instances.")
+                if not len(item["component"].ports):
+                    raise RuntimeError("Both components must have ports.")
         return candidates
 
     def place_by_ports(self, a, port_a, b, port_b, dx, dy, kind="ports", direction=None, alignment=None):
@@ -585,7 +546,7 @@ class Session:
         )
 
         instances = self.placement_instances()
-        target = instances[b["id"]]["instance"]
+        target = instances[b["id"]]["object"]
 
         view = self.cellview.view()
         self.hide_ports()
@@ -593,8 +554,7 @@ class Session:
         view.transaction("ShapeForge: define placement")
 
         try:
-            for instance, transform in updates:
-                instance.dcplx_trans = transform
+            self.apply_placement_updates(updates)
 
             target.set_property(
                 "shapeforge.placement",
@@ -621,10 +581,10 @@ class Session:
         dy = self.resolve_offset(dy)
 
         if transform_a is None:
-            transform_a = a["instance"].dcplx_trans
+            transform_a = self.object_transform(a)
 
         if transform_b is None:
-            transform_b = b["instance"].dcplx_trans
+            transform_b = self.object_transform(b)
 
         ports_a = {
             port["name"]: port
@@ -665,59 +625,24 @@ class Session:
         return new_transform, actual_dx, actual_dy
 
     def placement_instances(self):
-        self.validate()
-
-        result = {}
-
-        for instance in self.cell.each_inst():
-            instance_id = instance.property("shapeforge.instance_id")
-
-            if not instance_id:
-                continue
-
-            if instance_id in result:
-                raise RuntimeError(
-                    "Duplicate instance ID. Run Normalize Instance IDs."
-                )
-
-            if instance.size() != 1:
-                raise RuntimeError(
-                    "Placement does not support instance arrays."
-                )
-
-            component_id = self.component_id_for_instance(instance)
-            component = self.components.get(component_id)
-
-            result[instance_id] = {
-                "id": instance_id,
-                "instance": instance,
-                "component": component,
-            }
-
-        return result
+        """Compatibility alias: return all managed placement objects."""
+        return self.placement_objects()
 
     def regenerate_placement(self):
         self.validate()
-
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
-
         updates, _ = self.placement_plan()
-
         if not updates:
             return 0
-
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
-        view.transaction("ShapeForge: regenerate placement")
-
+        view.transaction("ShapeForge: regenerate dimensions and placement")
         try:
-            for instance, transform in updates:
-                instance.dcplx_trans = transform
+            self.apply_placement_updates(updates)
         finally:
             view.commit()
-
         view.zoom_fit()
         return len(updates)
 
@@ -882,52 +807,18 @@ class Session:
 
     def selected_placement_target(self):
         self.validate()
-
-        view = self.cellview.view()
-        selection = [
-            obj
-            for obj in view.object_selection
-            if obj.cv_index == self.cellview.index()
-        ]
-
+        selection = [obj for obj in self.cellview.view().object_selection
+                     if obj.cv_index == self.cellview.index()]
         if len(selection) != 1:
-            raise RuntimeError("Select exactly one target instance B.")
-
-        obj = selection[0]
-
-        if (
-            not obj.is_cell_inst()
-            or obj.top != self.cell.cell_index()
-            or len(obj.path) != 1
-        ):
-            raise RuntimeError(
-                "Select a direct instance in the working cell."
-            )
-
-        instance = obj.inst()
-
-        if instance.size() != 1:
-            raise RuntimeError("Instance arrays are not supported.")
-
-        instance_id = instance.property("shapeforge.instance_id")
-
-        if not instance_id:
-            raise RuntimeError("The instance has no ShapeForge ID.")
-
-        instances = self.placement_instances()
-        target = instances[instance_id]
-
-        raw = instance.property("shapeforge.placement")
-
+            raise RuntimeError("Select exactly one placement target.")
+        item = self.selected_placement_object(selection[0], self.placement_objects())
+        raw = item["object"].property("shapeforge.placement")
         if raw is None:
-            raise RuntimeError("The selected instance has no placement relation.")
-
+            raise RuntimeError("The selected object has no placement relation.")
         relation = json.loads(raw)
-
         if relation.get("version") != 1:
             raise RuntimeError("Unsupported placement version.")
-
-        return target, relation
+        return item, relation
 
     def placement_info(self):
         target, relation = self.selected_placement_target()
@@ -939,13 +830,9 @@ class Session:
         if reference is None:
             reference_name = "Missing instance"
         else:
-            reference_name = self.layout.cell(
-                reference["instance"].cell_index
-            ).name
+            reference_name = reference["name"]
 
-        target_name = self.layout.cell(
-            target["instance"].cell_index
-        ).name
+        target_name = target["name"]
 
         def describe(value):
             try:
@@ -1001,7 +888,9 @@ class Session:
         if reference is None:
             raise RuntimeError("The reference instance no longer exists.")
 
-        if reference["component"] is None or target["component"] is None:
+        if relation.get("kind", "ports") == "ports" and (
+            reference["component"] is None or target["component"] is None
+        ):
             raise RuntimeError("A linked component is unavailable.")
 
         # Reutilizar la validación, el cálculo y la transacción existentes.
@@ -1019,128 +908,81 @@ class Session:
 
     def remove_placement(self):
         target, _ = self.selected_placement_target()
-
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
-
         view = self.cellview.view()
         view.cancel()
         view.transaction("ShapeForge: remove placement")
-
         try:
-            target["instance"].delete_property("shapeforge.placement")
+            target["object"].delete_property("shapeforge.placement")
         finally:
             view.commit()
 
     def placement_plan(self, replacement=None):
-        """
-        Calculate all placements without modifying KLayout.
-
-        replacement: optional (target_id, proposed_relation).
-        """
-        instances = self.placement_instances()
+        """Plan box dimensions and mixed placement chains without mutation."""
+        objects = self.placement_objects()
         relations = {}
-
-        for instance_id, item in instances.items():
-            raw = item["instance"].property("shapeforge.placement")
-
+        for object_id, item in objects.items():
+            raw = item["object"].property("shapeforge.placement")
             if raw is not None:
                 relation = json.loads(raw)
-
                 if relation.get("version") != 1:
                     raise RuntimeError("Unsupported placement version.")
-
-                relations[instance_id] = relation
-
+                relations[object_id] = relation
         if replacement is not None:
             target_id, relation = replacement
-
-            if target_id not in instances:
-                raise RuntimeError("The target instance no longer exists.")
-
+            if target_id not in objects:
+                raise RuntimeError("The target object no longer exists.")
             relations[target_id] = relation
-
-        # Validar referencias antes de recorrer las dependencias.
         for target_id, relation in relations.items():
             reference_id = relation["reference_id"]
-
-            if reference_id not in instances:
-                raise RuntimeError(
-                    f"Missing reference instance: {reference_id}"
-                )
-
-            for instance_id in (reference_id, target_id):
-                if instances[instance_id]["component"] is None:
-                    raise RuntimeError(
-                        f"Unavailable component for instance: {instance_id}"
-                    )
-
-        transforms = {
-            instance_id: item["instance"].dcplx_trans
-            for instance_id, item in instances.items()
-        }
-
-        visiting = set()
-        completed = set()
-        path = []
-        order = []
-        offsets = {}
-
-        def visit(instance_id):
-            if instance_id in completed:
+            if reference_id not in objects:
+                raise RuntimeError(f"Missing reference object: {reference_id}")
+            if relation.get("kind", "ports") == "ports":
+                for object_id in (reference_id, target_id):
+                    item = objects[object_id]
+                    if item["type"] != "instance" or item["component"] is None:
+                        raise RuntimeError("Port placement requires linked instances.")
+        transforms = {key: self.object_transform(item)
+                      for key, item in objects.items()}
+        visiting, completed, path, order, offsets = set(), set(), [], [], {}
+        def visit(object_id):
+            if object_id in completed:
                 return
-
-            if instance_id in visiting:
-                start = path.index(instance_id)
-                cycle = path[start:] + [instance_id]
-
-                raise RuntimeError(
-                    "Placement cycle detected:\n" + " -> ".join(cycle)
-                )
-
-            visiting.add(instance_id)
-            path.append(instance_id)
-
-            relation = relations.get(instance_id)
-
+            if object_id in visiting:
+                cycle = path[path.index(object_id):] + [object_id]
+                raise RuntimeError("Placement cycle detected:\n" + " -> ".join(cycle))
+            visiting.add(object_id)
+            path.append(object_id)
+            relation = relations.get(object_id)
             if relation is not None:
                 reference_id = relation["reference_id"]
-
-                # Calcular primero la referencia.
                 visit(reference_id)
-
                 transform, dx, dy = self.relation_transform(
-                    instances[reference_id],
-                    instances[instance_id],
-                    relation,
+                    objects[reference_id], objects[object_id], relation,
                     transform_a=transforms[reference_id],
-                    transform_b=transforms[instance_id],
-                )
-                transforms[instance_id] = transform
-                offsets[instance_id] = (dx, dy)
-                order.append(instance_id)
-
+                    transform_b=transforms[object_id])
+                transforms[object_id] = transform
+                offsets[object_id] = (dx, dy)
+                order.append(object_id)
             path.pop()
-            visiting.remove(instance_id)
-            completed.add(instance_id)
-
+            visiting.remove(object_id)
+            completed.add(object_id)
         for target_id in sorted(relations):
             visit(target_id)
-
-        updates = [
-            (instances[instance_id]["instance"], transforms[instance_id])
-            for instance_id in order
-        ]
-
+        # Free boxes also need their parameterized dimensions updated.
+        free_boxes = [key for key in sorted(objects)
+                      if objects[key]["type"] == "box" and key not in relations]
+        updates = [(objects[key], transforms[key]) for key in free_boxes + order]
         return updates, offsets
 
     def placement_bbox(self, item, transform):
-        cell = self.layout.cell(item["instance"].cell_index)
-        box = cell.dbbox()
-
+        if item["type"] == "box":
+            box = item["local_box"]
+        else:
+            box = self.layout.cell(item["instance"].cell_index).dbbox()
         if box.empty():
-            raise RuntimeError("Cannot place a component with no geometry.")
-
+            raise RuntimeError("Cannot place an object with no geometry.")
         return pya.DPolygon(box).transformed(transform).bbox()
 
     def right_of_transform(
@@ -1235,10 +1077,10 @@ class Session:
             raise ValueError("Invalid alignment for this direction.")
 
         if transform_a is None:
-            transform_a = a["instance"].dcplx_trans
+            transform_a = self.object_transform(a)
 
         if transform_b is None:
-            transform_b = b["instance"].dcplx_trans
+            transform_b = self.object_transform(b)
 
         box_a = self.placement_bbox(a, transform_a)
         box_b = self.placement_bbox(b, transform_b)
@@ -1510,8 +1352,8 @@ class Session:
 
                 if box_id in seen:
                     raise RuntimeError(
-                        "Duplicate box ID. Select the copied box "
-                        "and run Make Box Parametric to give it a new ID."
+                        "Duplicate box ID. Select the box that must keep its ID "
+                        "and run Keep Selected Box ID."
                     )
 
                 seen.add(box_id)
@@ -1575,7 +1417,10 @@ class Session:
                         matches += 1
 
             if matches > 1:
-                box_id = None
+                raise RuntimeError(
+                    "Duplicate box ID. Select the box that must keep its ID "
+                    "and run Keep Selected Box ID."
+                )
 
         if not box_id:
             box_id = str(uuid4())
@@ -1597,35 +1442,104 @@ class Session:
         )
 
     def regenerate_boxes(self):
-        self.validate()
+        # Both menu actions use the same complete plan so dependent objects
+        # never use stale box dimensions.
+        return self.regenerate_placement()
 
+    def placement_objects(self):
+        """Collect instances and parametric boxes in the working cell."""
+        self.validate()
+        result = {}
+        def add(item):
+            if item["id"] in result:
+                raise RuntimeError(
+                    "Duplicate object ID. Resolve copied IDs before placement."
+                )
+            result[item["id"]] = item
+        for instance in self.cell.each_inst():
+            object_id = instance.property("shapeforge.instance_id")
+            if not object_id:
+                continue
+            if instance.size() != 1:
+                raise RuntimeError("Placement does not support instance arrays.")
+            cell = self.layout.cell(instance.cell_index)
+            component_id = self.component_id_for_instance(instance)
+            add({"id": object_id, "type": "instance", "object": instance,
+                 "instance": instance, "component": self.components.get(component_id),
+                 "name": cell.name, "label": f"Instance {cell.name} | {object_id}"})
+        for shape, definition in self.parametric_boxes():
+            box = self.sized_box(shape, definition["width_um"], definition["height_um"])
+            object_id = shape.property("shapeforge.object_id")
+            # Geometry is local to the box's lower-left corner. Translation
+            # represents that corner in working-cell coordinates.
+            local = pya.DBox(0, 0, self.dbu_to_um(box.width()),
+                            self.dbu_to_um(box.height()))
+            add({"id": object_id, "type": "box", "object": shape,
+                 "shape": shape, "component": None, "local_box": local,
+                 "name": "Parametric box", "label": f"Box | {object_id}"})
+        return result
+
+    def object_transform(self, item):
+        if item["type"] == "instance":
+            return item["instance"].dcplx_trans
+        box = item["shape"].box
+        return pya.DCplxTrans(1, 0, False,
+                             self.dbu_to_um(box.left), self.dbu_to_um(box.bottom))
+
+    def apply_placement_updates(self, updates):
+        # No iterators are active while mutating KLayout objects.
+        for item, transform in updates:
+            if item["type"] == "instance":
+                item["instance"].dcplx_trans = transform
+            else:
+                x = self.um_to_dbu(transform.disp.x)
+                y = self.um_to_dbu(transform.disp.y)
+                width = self.um_to_dbu(item["local_box"].width())
+                height = self.um_to_dbu(item["local_box"].height())
+                item["shape"].box = pya.Box(x, y, x + width, y + height)
+
+    def selected_placement_object(self, obj, objects):
+        if obj.top != self.cell.cell_index():
+            raise RuntimeError("Select objects in the working cell.")
+        if obj.is_cell_inst():
+            if len(obj.path) != 1:
+                raise RuntimeError("Select a direct instance in the working cell.")
+            object_id = obj.inst().property("shapeforge.instance_id")
+        else:
+            if len(obj.path) != 0 or not obj.shape.is_box():
+                raise RuntimeError("Select a direct box or instance.")
+            object_id = obj.shape.property("shapeforge.object_id")
+            if obj.shape.property("shapeforge.box") is None:
+                raise RuntimeError("Run Make Box Parametric on this box first.")
+        if not object_id or object_id not in objects:
+            raise RuntimeError("The selected object has no registered ShapeForge ID.")
+        return objects[object_id]
+
+    def keep_selected_box_id(self):
+        self.validate()
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
-
-        # Calcular todo antes de modificar las figuras.
-        updates = [
-            (
-                shape,
-                self.sized_box(
-                    shape,
-                    definition["width_um"],
-                    definition["height_um"],
-                ),
-            )
-            for shape, definition in self.parametric_boxes()
-        ]
-
-        if not updates:
+        keeper = self.selected_box()
+        box_id = keeper.property("shapeforge.object_id")
+        if not box_id or keeper.property("shapeforge.box") is None:
+            raise RuntimeError("Select a parametric box with a ShapeForge ID.")
+        duplicates = []
+        for layer_index in self.layout.layer_indexes():
+            for shape in self.cell.shapes(layer_index).each():
+                if shape.property("shapeforge.object_id") == box_id and shape != keeper:
+                    duplicates.append(shape)
+        if not duplicates:
             return 0
-
+        updates = [(shape, str(uuid4())) for shape in duplicates]
         view = self.cellview.view()
+        self.hide_ports()
         view.cancel()
-        view.transaction("ShapeForge: regenerate boxes")
-
+        view.transaction("ShapeForge: resolve duplicated box ID")
         try:
-            for shape, box in updates:
-                shape.box = box
+            for shape, new_id in updates:
+                shape.set_property("shapeforge.object_id", new_id)
+                shape.delete_property("shapeforge.placement")
         finally:
             view.commit()
-
         return len(updates)
+
