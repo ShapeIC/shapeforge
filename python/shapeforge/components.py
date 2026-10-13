@@ -167,17 +167,20 @@ def reconstruct_component(recipe):
     elif recipe["provider"] == "external-python":
         from shapeforge.external import generate_external
         generated = generate_external(recipe, recipe["arguments"])
+    elif recipe["provider"] == "shapeic-cellkit-technology":
+        from shapeforge.technology import generate_technology
+        generated = generate_technology(recipe["generator"], recipe["arguments"], recipe["pdk"])
     else:
         raise ValueError(f"Unknown component provider: {recipe['provider']}")
     warnings = []
     for key in ("implementation_digest", "technology_digest", "technology_revision",
                 "layout_policy"):
         if key in recipe and recipe[key] != generated.recipe.get(key):
-            warnings.append(f"{recipe.get('primitive', recipe.get('function', 'test_block'))}: {key} differs from the saved recipe.")
+            warnings.append(f"{recipe.get('primitive', recipe.get('function', recipe.get('generator', 'test_block')))}: {key} differs from the saved recipe.")
     saved, current = recipe.get("versions", {}), generated.recipe.get("versions", {})
     for package in sorted(set(saved) | set(current)):
         if saved.get(package) != current.get(package):
-            warnings.append(f"{recipe.get('primitive', recipe.get('function', 'test_block'))}: {package} "
+            warnings.append(f"{recipe.get('primitive', recipe.get('function', recipe.get('generator', 'test_block')))}: {package} "
                             f"saved={saved.get(package, 'unavailable')}, installed={current.get(package, 'unavailable')}.")
     return generated, warnings
 
@@ -187,12 +190,15 @@ def generate_inputs(recipe, values, parameters):
     if recipe["provider"] == "external-python":
         from shapeforge.external import generate_external
         return generate_external(recipe, values, parameters)
+    if recipe["provider"] == "shapeic-cellkit-technology":
+        from shapeforge.technology import generate_technology
+        return generate_technology(recipe["generator"], values, recipe["pdk"], parameters)
     return generate_cellkit(recipe["primitive"], resolve_geometry(values, parameters),
                            recipe["pdk"], recipe["options"])
 
 
 def input_definition(values, provider):
-    if provider == "external-python":
+    if provider in ("external-python", "shapeic-cellkit-technology"):
         return {"version": 2, "values": dict(values)} if any(isinstance(v, dict) for v in values.values()) else None
     return {"version": 1, "values": dict(values)} if any(isinstance(v, str) for v in values.values()) else None
 
@@ -200,6 +206,9 @@ def input_definition(values, provider):
 def validate_input_definition(definition, recipe, parameters):
     if not isinstance(definition, dict) or set(definition) != {"version", "values"}:
         raise ValueError("Invalid primitive input definition.")
+    if recipe["provider"] == "shapeic-cellkit-technology" and type(definition["version"]) is int and definition["version"] == 2:
+        from shapeforge.technology import resolve_inputs
+        return resolve_inputs(recipe["generator"], definition["values"], parameters, recipe["pdk"])
     if recipe["provider"] == "external-python" and type(definition["version"]) is int and definition["version"] == 2:
         from shapeforge.external import resolve_arguments
         return resolve_arguments(definition["values"], recipe["parameter_types"], parameters)

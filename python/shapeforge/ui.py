@@ -6,6 +6,7 @@ import pya
 from shapeforge.session import Session
 from shapeforge.components import available_primitives, cellkit_catalog, geometry_fields
 from shapeforge.project import prepare_project, save_project as write_project
+from shapeforge.technology import available_technology_pcells, parameter_specs as technology_specs
 
 _actions = []
 _session = None
@@ -35,16 +36,29 @@ def external_libraries():
 
 
 def ask_external_arguments(recipe, previous, session):
-    import inspect
-    from shapeforge.external import generator_specs, resolve_arguments
+    from shapeforge.external import generator_specs
     specs = generator_specs(recipe)  # Validate every annotation before prompting.
+    return ask_component_arguments(recipe["function"], specs, previous, session)
+
+
+def ask_component_arguments(generator, specs, previous, session):
+    import inspect
+    from shapeforge.external import resolve_arguments
     types = {name: spec["type"] for name, spec in specs.items()}
     values = {}
     for name, spec in specs.items():
         kind = spec["type"]
         default = previous.get(name, spec["default"])
+        if "choices" in spec:
+            choices = spec["choices"]
+            answer = pya.InputDialog.ask_item("ShapeForge — " + generator, name + ":", choices,
+                                            choices.index(default) if default in choices else 0)
+            if answer is None:
+                return
+            values[name] = answer
+            continue
         if kind == "bool":
-            answer = pya.InputDialog.ask_item("ShapeForge — External PCell", name + " (bool):",
+            answer = pya.InputDialog.ask_item("ShapeForge — " + generator, name + " (bool):",
                                             ["false", "true"], 1 if default is True else 0)
             if answer is None:
                 return
@@ -52,9 +66,9 @@ def ask_external_arguments(recipe, previous, session):
             continue
         text = "" if default is inspect.Parameter.empty else (
             default["expression"] if isinstance(default, dict) else str(default))
-        hint = "literal text" if kind == "str" else "native units; number or project expression"
+        hint = "literal text" if kind == "str" else f"{spec.get('unit', 'native units')}; number or project expression"
         while True:
-            answer = pya.InputDialog.ask_string("ShapeForge — " + recipe["function"], f"{name} ({kind}; {hint}):", text)
+            answer = pya.InputDialog.ask_string("ShapeForge — " + generator, f"{name} ({kind}; {hint}):", text)
             if answer is None:
                 return
             try:
@@ -828,12 +842,22 @@ def insert_primitive():
         session.validate()
         catalog = cellkit_catalog(session.pdk)
         primitives = available_primitives(catalog)
-        names = sorted(primitives)
+        technology = available_technology_pcells(catalog)
+        names = sorted(primitives) + sorted(technology)
         if not names:
             raise RuntimeError(f"No primitive PCell providers are available for PDK {session.pdk}.")
         primitive = pya.InputDialog.ask_item(
             "ShapeForge — Insert Primitive", f"Primitive ({session.pdk}):", names, 0)
         if primitive is None:
+            return
+        if primitive in technology:
+            generator = technology[primitive]
+            previous = next((recipe["arguments"] for recipe in reversed(list(session.component_recipes.values()))
+                             if recipe.get("provider") == "shapeic-cellkit-technology"
+                             and recipe.get("generator") == generator and recipe.get("pdk") == session.pdk), {})
+            values = ask_component_arguments(generator, technology_specs(generator, session.pdk), previous, session)
+            if values is not None:
+                session.insert_technology_pcell(generator, values)
             return
         previous = next((recipe["geometry"] for recipe in reversed(list(session.component_recipes.values()))
                          if recipe.get("provider") == "shapeic-cellkit"
@@ -870,6 +894,8 @@ def edit_primitive_parameters():
         previous = recipe.get("geometry", recipe.get("arguments")) if raw is None else json.loads(raw)["values"]
         if recipe["provider"] == "external-python":
             values = ask_external_arguments(recipe, previous, session)
+        elif recipe["provider"] == "shapeic-cellkit-technology":
+            values = ask_component_arguments(recipe["generator"], technology_specs(recipe["generator"], recipe["pdk"]), previous, session)
         else:
             descriptor = cellkit_catalog(recipe["pdk"]).primitive(recipe["primitive"])
             values = ask_primitive_geometry(recipe["primitive"], previous, descriptor.geometry_limits, session)

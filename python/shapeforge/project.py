@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 4
+VERSION = 5
 
 
 class ProjectError(ValueError):
@@ -81,6 +81,26 @@ def _recipe(recipe, where):
         for package, value in recipe["versions"].items():
             _string(package, f"{where}.versions package")
             _string(value, f"{where}.versions.{package}")
+    elif provider == "shapeic-cellkit-technology":
+        _object(recipe, ("provider", "pdk", "generator", "arguments", "parameter_types", "versions",
+                         "implementation_digest", "technology_digest", "technology_revision", "layout_policy"), where)
+        for key in ("pdk", "generator", "implementation_digest", "technology_digest", "technology_revision", "layout_policy"):
+            _string(recipe[key], f"{where}.{key}")
+        from shapeforge.technology import parameter_specs, resolve_inputs
+        try:
+            expected = {name: spec["type"] for name, spec in parameter_specs(recipe["generator"], recipe["pdk"]).items()}
+            if recipe["parameter_types"] != expected:
+                raise ValueError("Technology parameter types differ from the known contract.")
+            if not isinstance(recipe["arguments"], dict) or any(isinstance(v, dict) for v in recipe["arguments"].values()):
+                raise ValueError("Technology recipes require effective argument literals.")
+            resolve_inputs(recipe["generator"], recipe["arguments"], {}, recipe["pdk"])
+        except ValueError as error:
+            raise ProjectError(f"{where}: {error}") from error
+        if not isinstance(recipe["versions"], dict):
+            raise ProjectError(f"{where}: versions must be an object.")
+        for package, value in recipe["versions"].items():
+            _string(package, "versions package")
+            _string(value, "versions value")
     elif provider == "external-python":
         _object(recipe, ("provider", "library", "file", "function", "pdk", "arguments",
                          "parameter_types", "implementation_digest", "versions"), where)
@@ -117,8 +137,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1, 2, 3 and 4.")
+    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4, 5):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1, 2, 3, 4 and 5.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -157,6 +177,8 @@ def validate_document(document):
         _recipe(entry["recipe"], f"component {entry['id']}")
         if entry["recipe"]["provider"] == "external-python" and document["version"] < 4:
             raise ProjectError("External Python recipes require project version 4.")
+        if entry["recipe"]["provider"] == "shapeic-cellkit-technology" and document["version"] < 5:
+            raise ProjectError("CellKit technology recipes require project version 5.")
         pdk = entry["recipe"].get("pdk")
         if pdk is not None and pdk != environment["pdk"]:
             raise ProjectError("Component PDK differs from the project PDK.")

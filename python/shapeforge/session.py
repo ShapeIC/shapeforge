@@ -81,6 +81,14 @@ class Session:
         arguments = {**generated.recipe["arguments"], **arguments}
         return self.insert_generated(generated, arguments)
 
+    def insert_technology_pcell(self, generator, arguments):
+        from shapeforge.technology import generate_technology
+        self.validate()
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        generated = generate_technology(generator, arguments, self.pdk, self.parameters())
+        return self.insert_generated(generated, {**generated.recipe["arguments"], **arguments})
+
     def insert_generated(self, generated, geometry):
         self.validate()
         layout, view = self.layout, self.cellview.view()
@@ -89,7 +97,7 @@ class Session:
         recorded = self.cell.property("shapeforge.pdk")
         if recorded is not None and recorded != generated.recipe["pdk"]:
             raise ValueError("Component PDK differs from the project PDK.")
-        primitive = generated.recipe.get("primitive", generated.recipe.get("function", "component"))
+        primitive = generated.recipe.get("primitive", generated.recipe.get("function", generated.recipe.get("generator", "component")))
         source = generated.component
         recipe = generated.recipe
 
@@ -178,7 +186,7 @@ class Session:
         if recipe is None:
             raw = self.layout.cell(instance.cell_index).property("shapeforge.component_recipe")
             recipe = None if raw is None else json.loads(raw)
-        if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python") or component_id not in self.components:
+        if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology") or component_id not in self.components:
             raise RuntimeError("The selected instance needs a recorded generator recipe and linked component.")
         return instance, recipe
 
@@ -206,7 +214,7 @@ class Session:
         view.cancel()
         view.transaction("ShapeForge: edit primitive parameters")
         try:
-            target = self.layout.create_cell(f"SF_{recipe.get('primitive', recipe.get('function', 'component'))}_{component_id[:8]}")
+            target = self.layout.create_cell(f"SF_{recipe.get('primitive', recipe.get('function', recipe.get('generator', 'component')))}_{component_id[:8]}")
             target.copy_tree(generated.component.kdb_cell)
             target.set_property("shapeforge.component_id", component_id)
             target.set_property("shapeforge.component_recipe", serialized)
@@ -248,7 +256,7 @@ class Session:
             definition = json.loads(raw)
             component_id = self.component_id_for_instance(instance)
             recipe = self.component_recipes.get(component_id)
-            if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python"):
+            if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology"):
                 raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")
             validate_input_definition(definition, recipe, self.parameters())
             generated = generate_inputs(recipe, definition["values"], self.parameters())
@@ -267,7 +275,7 @@ class Session:
     def apply_regeneration_plan(self, components, updates):
         for object_id, generated in components.items():
             component_id = str(uuid4())
-            target = self.layout.create_cell(f"SF_{generated.recipe.get('primitive', generated.recipe.get('function', 'component'))}_{component_id[:8]}")
+            target = self.layout.create_cell(f"SF_{generated.recipe.get('primitive', generated.recipe.get('function', generated.recipe.get('generator', 'component')))}_{component_id[:8]}")
             target.copy_tree(generated.component.kdb_cell)
             target.set_property("shapeforge.component_id", component_id)
             target.set_property("shapeforge.component_recipe", json.dumps(generated.recipe, allow_nan=False))
@@ -342,9 +350,13 @@ class Session:
                     recipe = self.component_recipes.get(component_id, {})
                     for field, definition in json.loads(raw)["values"].items():
                         effective = recipe.get("geometry", recipe.get("arguments", {})).get(field)
-                        unit = " µm" if recipe.get("provider") == "shapeic-cellkit" and field.endswith("_m") else ""
-                        if effective is not None and unit:
+                        si_length = recipe.get("provider") == "shapeic-cellkit" and field.endswith("_m")
+                        tech_length = recipe.get("provider") == "shapeic-cellkit-technology" and field in ("length", "wf")
+                        unit = " µm" if si_length or tech_length else ""
+                        if effective is not None and si_length:
                             effective *= 1e6
+                        if isinstance(definition, dict):
+                            definition = definition.get("expression", definition)
                         lines.append(f"   {field}: {definition}; rendered={effective}{unit}")
 
                 for port in self.transformed_ports(instance, source):
