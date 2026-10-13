@@ -1,4 +1,3 @@
-
 import pya
 import math
 from uuid import uuid4
@@ -423,7 +422,9 @@ class Session:
 
                 protected_ids.add(relation["reference_id"])
 
-        for shape, _ in self.parametric_boxes():
+        for shape, definition in self.parametric_boxes():
+            protected_ids.update(ref["reference_id"]
+                                 for ref in self.box_extent_references(definition))
             raw = shape.property("shapeforge.placement")
             if raw is not None:
                 protected_ids.add(json.loads(raw)["reference_id"])
@@ -918,9 +919,9 @@ class Session:
         finally:
             view.commit()
 
-    def placement_plan(self, replacement=None):
-        """Plan box dimensions and mixed placement chains without mutation."""
-        objects = self.placement_objects()
+    def placement_plan(self, replacement=None, box_replacement=None):
+        """Plan dimensions, referenced extents and placement without mutation."""
+        objects = self.placement_objects(box_replacement=box_replacement)
         relations = {}
         for object_id, item in objects.items():
             raw = item["object"].property("shapeforge.placement")
@@ -934,15 +935,36 @@ class Session:
             if target_id not in objects:
                 raise RuntimeError("The target object no longer exists.")
             relations[target_id] = relation
+        if box_replacement is not None and box_replacement[0] not in objects:
+            raise RuntimeError("The target box no longer exists.")
+
+        dependencies = {key: set() for key in objects}
+        for target_id, item in objects.items():
+            if item["type"] == "box":
+                definition = item["definition"]
+                extent_refs = self.box_extent_references(definition)
+                if extent_refs and target_id in relations:
+                    raise RuntimeError(
+                        "Box extents control position and size. Remove its "
+                        "placement relation before defining extents."
+                    )
+                dependencies[target_id].update(
+                    ref["reference_id"] for ref in extent_refs)
         for target_id, relation in relations.items():
             reference_id = relation["reference_id"]
-            if reference_id not in objects:
-                raise RuntimeError(f"Missing reference object: {reference_id}")
+            dependencies[target_id].add(reference_id)
             if relation.get("kind", "ports") == "ports":
                 for object_id in (reference_id, target_id):
+                    if object_id not in objects:
+                        raise RuntimeError(f"Missing reference object: {object_id}")
                     item = objects[object_id]
                     if item["type"] != "instance" or item["component"] is None:
                         raise RuntimeError("Port placement requires linked instances.")
+        for refs in dependencies.values():
+            for reference_id in refs:
+                if reference_id not in objects:
+                    raise RuntimeError(f"Missing reference object: {reference_id}")
+
         transforms = {key: self.object_transform(item)
                       for key, item in objects.items()}
         visiting, completed, path, order, offsets = set(), set(), [], [], {}
@@ -954,26 +976,29 @@ class Session:
                 raise RuntimeError("Placement cycle detected:\n" + " -> ".join(cycle))
             visiting.add(object_id)
             path.append(object_id)
+            for reference_id in sorted(dependencies[object_id]):
+                visit(reference_id)
+            item = objects[object_id]
+            if item["type"] == "box":
+                transforms[object_id] = self.box_extent_transform(
+                    item, objects, transforms)
             relation = relations.get(object_id)
             if relation is not None:
                 reference_id = relation["reference_id"]
-                visit(reference_id)
                 transform, dx, dy = self.relation_transform(
-                    objects[reference_id], objects[object_id], relation,
+                    objects[reference_id], item, relation,
                     transform_a=transforms[reference_id],
                     transform_b=transforms[object_id])
                 transforms[object_id] = transform
                 offsets[object_id] = (dx, dy)
+            if item["type"] == "box" or relation is not None:
                 order.append(object_id)
             path.pop()
             visiting.remove(object_id)
             completed.add(object_id)
-        for target_id in sorted(relations):
-            visit(target_id)
-        # Free boxes also need their parameterized dimensions updated.
-        free_boxes = [key for key in sorted(objects)
-                      if objects[key]["type"] == "box" and key not in relations]
-        updates = [(objects[key], transforms[key]) for key in free_boxes + order]
+        for object_id in sorted(objects):
+            visit(object_id)
+        updates = [(objects[key], transforms[key]) for key in order]
         return updates, offsets
 
     def placement_bbox(self, item, transform):
@@ -1395,6 +1420,12 @@ class Session:
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
 
         shape = self.selected_box()
+        raw = shape.property("shapeforge.box")
+        if raw is not None and self.box_extent_references(json.loads(raw)):
+            raise RuntimeError(
+                "This box has referenced extents. Use Define Box Extents "
+                "to edit them or switch an axis to Dimension."
+            )
         new_box = self.sized_box(shape, width, height)
 
         definition = {
@@ -1446,7 +1477,7 @@ class Session:
         # never use stale box dimensions.
         return self.regenerate_placement()
 
-    def placement_objects(self):
+    def placement_objects(self, box_replacement=None):
         """Collect instances and parametric boxes in the working cell."""
         self.validate()
         result = {}
@@ -1468,14 +1499,23 @@ class Session:
                  "instance": instance, "component": self.components.get(component_id),
                  "name": cell.name, "label": f"Instance {cell.name} | {object_id}"})
         for shape, definition in self.parametric_boxes():
-            box = self.sized_box(shape, definition["width_um"], definition["height_um"])
             object_id = shape.property("shapeforge.object_id")
+            if box_replacement is not None and object_id == box_replacement[0]:
+                definition = box_replacement[1]
+            self.validate_box_definition(definition)
+            current = shape.box
+            width = (self.dbu_to_um(current.width()) if definition.get("x_extents")
+                     else definition["width_um"])
+            height = (self.dbu_to_um(current.height()) if definition.get("y_extents")
+                      else definition["height_um"])
+            box = self.sized_box(shape, width, height)
             # Geometry is local to the box's lower-left corner. Translation
             # represents that corner in working-cell coordinates.
             local = pya.DBox(0, 0, self.dbu_to_um(box.width()),
                             self.dbu_to_um(box.height()))
             add({"id": object_id, "type": "box", "object": shape,
                  "shape": shape, "component": None, "local_box": local,
+                 "definition": definition,
                  "name": "Parametric box", "label": f"Box | {object_id}"})
         return result
 
@@ -1542,4 +1582,139 @@ class Session:
         finally:
             view.commit()
         return len(updates)
+
+    @staticmethod
+    def box_extent_references(definition):
+        refs = []
+        for axis in ("x", "y"):
+            extents = definition.get(f"{axis}_extents")
+            if extents:
+                refs.extend((extents["min"], extents["max"]))
+        return refs
+
+    def validate_box_definition(self, definition):
+        if definition.get("version") != 1:
+            raise RuntimeError("Unsupported box definition version.")
+        for axis, dimension, allowed in (
+            ("x", "width_um", ("left", "center", "right", "port")),
+            ("y", "height_um", ("bottom", "center", "top", "port")),
+        ):
+            extents = definition.get(f"{axis}_extents")
+            if extents is None:
+                if dimension not in definition:
+                    raise ValueError(f"Missing {dimension}.")
+                if self.resolve_offset(definition[dimension]) <= 0:
+                    raise ValueError("Box dimensions must be positive.")
+                continue
+            for end in ("min", "max"):
+                ref = extents[end]
+                if not isinstance(ref.get("reference_id"), str):
+                    raise ValueError("An extent reference needs an object ID.")
+                if ref.get("anchor") not in allowed:
+                    raise ValueError(f"Invalid anchor for the {axis.upper()} axis.")
+                if ref["anchor"] == "port" and not ref.get("port"):
+                    raise ValueError("A port reference needs a port name.")
+                self.resolve_offset(ref.get("offset_um", 0))
+
+    def extent_coordinate(self, reference, axis, objects, transforms):
+        reference_id = reference["reference_id"]
+        item = objects[reference_id]
+        transform = transforms[reference_id]
+        anchor = reference["anchor"]
+        if anchor == "port":
+            if item["type"] != "instance" or item["component"] is None:
+                raise RuntimeError("A port extent requires a linked instance.")
+            ports = {port["name"]: port for port in self.transformed_ports(
+                item["instance"], item["component"], transform)}
+            port_name = reference["port"]
+            if port_name not in ports:
+                raise RuntimeError(f"Missing extent port: {port_name}")
+            value = ports[port_name]["center"][0 if axis == "x" else 1]
+        else:
+            box = self.placement_bbox(item, transform)
+            if axis == "x":
+                anchors = {"left": box.left, "center": (box.left + box.right) / 2,
+                           "right": box.right}
+            else:
+                anchors = {"bottom": box.bottom, "center": (box.bottom + box.top) / 2,
+                           "top": box.top}
+            value = anchors[anchor]
+        return value + self.resolve_offset(reference.get("offset_um", 0))
+
+    def box_extent_transform(self, item, objects, transforms):
+        definition = item["definition"]
+        transform = transforms[item["id"]]
+        x = self.um_to_dbu(transform.disp.x)
+        y = self.um_to_dbu(transform.disp.y)
+        width = self.um_to_dbu(item["local_box"].width())
+        height = self.um_to_dbu(item["local_box"].height())
+        for axis in ("x", "y"):
+            extents = definition.get(f"{axis}_extents")
+            if not extents:
+                continue
+            minimum = self.extent_coordinate(extents["min"], axis, objects, transforms)
+            maximum = self.extent_coordinate(extents["max"], axis, objects, transforms)
+            if maximum <= minimum:
+                raise ValueError(f"Box {item['id']}: {axis.upper()} maximum must exceed minimum.")
+            lower = self.snap_um_to_dbu(minimum)
+            upper = self.snap_um_to_dbu(maximum)
+            if upper <= lower:
+                raise ValueError("Box extents collapse after grid snapping.")
+            if axis == "x":
+                x, width = lower, upper - lower
+            else:
+                y, height = lower, upper - lower
+        item["local_box"] = pya.DBox(0, 0, self.dbu_to_um(width), self.dbu_to_um(height))
+        return pya.DCplxTrans(1, 0, False, self.dbu_to_um(x), self.dbu_to_um(y))
+
+    def selected_box_definition(self):
+        shape = self.selected_box()
+        raw = shape.property("shapeforge.box")
+        if raw is None:
+            raise RuntimeError("Run Make Box Parametric first.")
+        object_id = shape.property("shapeforge.object_id")
+        objects = self.placement_objects()
+        if object_id not in objects:
+            raise RuntimeError("The box has no ShapeForge ID.")
+        return shape, object_id, json.loads(raw), objects
+
+    def define_box_extents(self, definition):
+        self.validate()
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        shape, object_id, _, _ = self.selected_box_definition()
+        self.validate_box_definition(definition)
+        serialized = json.dumps(definition, allow_nan=False)
+        updates, _ = self.placement_plan(box_replacement=(object_id, definition))
+        view = self.cellview.view()
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: define box extents")
+        try:
+            self.apply_placement_updates(updates)
+            shape.set_property("shapeforge.box", serialized)
+        finally:
+            view.commit()
+        view.zoom_fit()
+
+    def box_info(self):
+        shape, object_id, definition, objects = self.selected_box_definition()
+        lines = [f"Box ID: {object_id}"]
+        for axis, dimension in (("x", "width_um"), ("y", "height_um")):
+            extents = definition.get(f"{axis}_extents")
+            if extents:
+                for end in ("min", "max"):
+                    ref = extents[end]
+                    item = objects.get(ref["reference_id"])
+                    label = item["label"] if item else f"MISSING: {ref['reference_id']}"
+                    anchor = (f"port {ref['port']}" if ref["anchor"] == "port"
+                              else ref["anchor"])
+                    lines.append(f"{axis.upper()} {end}: {label}, {anchor}, "
+                                 f"offset={ref.get('offset_um', 0)} µm")
+            else:
+                lines.append(f"{dimension}: {definition[dimension]} µm")
+        box = shape.box
+        lines.append(f"Current size: {self.dbu_to_um(box.width()):g} × "
+                     f"{self.dbu_to_um(box.height()):g} µm")
+        return "\n".join(lines)
 

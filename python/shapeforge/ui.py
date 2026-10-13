@@ -673,6 +673,91 @@ def keep_selected_box_id():
     run_session_action(execute)
 
 
+
+def define_box_extents():
+    def execute(session):
+        _, box_id, definition, objects = session.selected_box_definition()
+        references = [item for key, item in sorted(objects.items()) if key != box_id]
+        labels = [item["label"] for item in references]
+
+        def choose_reference(axis, end, existing):
+            if not references:
+                raise RuntimeError("Insert another managed object to use as a reference.")
+            reference_ids = [item["id"] for item in references]
+            default = (reference_ids.index(existing["reference_id"])
+                       if existing and existing.get("reference_id") in reference_ids else 0)
+            choice = pya.InputDialog.ask_item(
+                "ShapeForge — Box Extents", f"{axis.upper()} {end}: reference object:",
+                labels, default)
+            if choice is None:
+                return None
+            item = references[labels.index(choice)]
+            anchors = (["left", "center", "right"] if axis == "x"
+                       else ["bottom", "center", "top"])
+            options = list(anchors)
+            port_options = {}
+            if item["type"] == "instance" and item["component"] is not None:
+                for port in item["component"].ports:
+                    label = f"Port: {port.name}"
+                    options.append(label)
+                    port_options[label] = port.name
+            previous = None
+            if existing:
+                previous = (f"Port: {existing.get('port')}" if existing.get("anchor") == "port"
+                            else existing.get("anchor"))
+            default = (options.index(previous) if previous in options
+                       else (0 if end == "min" else 2))
+            anchor = pya.InputDialog.ask_item(
+                "ShapeForge — Box Extents", f"{axis.upper()} {end}: edge or port:",
+                options, default)
+            if anchor is None:
+                return None
+            text = pya.InputDialog.ask_string(
+                "ShapeForge — Box Extents", f"{axis.upper()} {end}: offset (µm), number or parameter:",
+                str(existing.get("offset_um", 0) if existing else 0))
+            if text is None:
+                return None
+            ref = {"reference_id": item["id"], "anchor": anchor,
+                   "offset_um": session.parse_offset(text)}
+            if anchor in port_options:
+                ref["anchor"] = "port"
+                ref["port"] = port_options[anchor]
+            return ref
+
+        for axis, dimension in (("x", "width_um"), ("y", "height_um")):
+            key = f"{axis}_extents"
+            existing = definition.get(key)
+            mode = pya.InputDialog.ask_item(
+                "ShapeForge — Box Extents", f"{axis.upper()} axis definition:",
+                ["Dimension", "Two references"], 1 if existing else 0)
+            if mode is None:
+                return
+            if mode == "Dimension":
+                text = pya.InputDialog.ask_string(
+                    "ShapeForge — Box Extents", f"{dimension} (µm), number or parameter:",
+                    str(definition.get(dimension, 1)))
+                if text is None:
+                    return
+                definition[dimension] = session.parse_offset(text)
+                definition.pop(key, None)
+            else:
+                lower = choose_reference(axis, "min", existing.get("min") if existing else None)
+                if lower is None:
+                    return
+                upper = choose_reference(axis, "max", existing.get("max") if existing else None)
+                if upper is None:
+                    return
+                definition[key] = {"min": lower, "max": upper}
+        session.define_box_extents(definition)
+        pya.MessageBox.info("ShapeForge — Box", "Box extents saved and regenerated.", pya.MessageBox.Ok)
+    run_session_action(execute)
+
+
+def box_info():
+    def execute(session):
+        pya.MessageBox.info("ShapeForge — Box", session.box_info(), pya.MessageBox.Ok)
+    run_session_action(execute)
+
 def start():
     mw = pya.Application.instance().main_window()
     menu = mw.menu()
@@ -901,4 +986,15 @@ def start():
     action.on_triggered = keep_selected_box_id
     menu.insert_item("shapeforge_menu.end", "keep_selected_box_id", action)
     _actions.append(action)
+
+    for name, title, callback in [
+        ("define_box_extents", "Define Box Extents...", define_box_extents),
+        ("box_info", "Box Info", box_info),
+    ]:
+        action = pya.Action()
+        action.title = title
+        action.on_triggered = callback
+        menu.insert_item("shapeforge_menu.end", name, action)
+        _actions.append(action)
+
 
