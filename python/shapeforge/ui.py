@@ -117,8 +117,8 @@ def insert_external_pcell():
 def show_parameters():
     global _parameter_panel
     if _parameter_panel is None or _parameter_panel.dock._destroyed():
-        from shapeforge.parameter_panel import ParameterPanel
-        _parameter_panel = ParameterPanel(pya.Application.instance().main_window(), lambda: _session)
+        from shapeforge.panel import ShapeForgePanel
+        _parameter_panel = ShapeForgePanel(pya.Application.instance().main_window(), lambda: _session)
     _parameter_panel.show()
 
 
@@ -289,23 +289,60 @@ def route_ports():
         )
 
     run_session_action(execute)
-def place_by_edges():
+def choose_placement_pair(session, allow_boxes, target_only=False):
+    if target_only:
+        session.validate()
+        selection = list(session.cellview.view().object_selection)
+        if len(selection) != 1 or selection[0].cv_index != session.cellview.index():
+            raise RuntimeError("Select exactly one placement target in the working cell.")
+        objects = session.placement_objects()
+        target = session.selected_placement_object(selection[0], objects)
+        candidates = [item for key, item in objects.items() if key != target["id"]]
+        if not allow_boxes:
+            if target["type"] != "instance" or target["component"] is None or not len(target["component"].ports):
+                raise RuntimeError("Port placement requires a linked target instance with ports.")
+            candidates = [item for item in candidates if item["type"] == "instance"
+                          and item["component"] is not None and len(item["component"].ports)]
+        if not candidates:
+            raise RuntimeError("No other registered reference object is available.")
+    else:
+        candidates = session.placement_candidates(allow_boxes=allow_boxes)
+    labels = [item["label"] for item in candidates]
+    choice = pya.InputDialog.ask_item("ShapeForge — Placement", "Reference object A (stays fixed):", labels, 0)
+    if choice is None:
+        return
+    reference = candidates[labels.index(choice)]
+    return reference, target if target_only else candidates[1 - labels.index(choice)]
+
+
+def current_placement_pair(session, reference, target, target_only):
+    objects = session.placement_objects()
+    if target_only:
+        selection = list(session.cellview.view().object_selection)
+        if len(selection) != 1 or selection[0].cv_index != session.cellview.index():
+            raise RuntimeError("The placement target selection changed. Retry the action.")
+        current = session.selected_placement_object(selection[0], objects)
+        if current["id"] != target["id"]:
+            raise RuntimeError("The placement target selection changed. Retry the action.")
+    if reference["id"] not in objects or target["id"] not in objects:
+        raise RuntimeError("A placement object was removed. Retry the action.")
+    return objects[reference["id"]], objects[target["id"]]
+
+
+def panel_place_by_edges():
+    place_by_edges(target_only=True)
+
+
+def panel_place_by_ports():
+    place_by_ports(target_only=True)
+
+
+def place_by_edges(target_only=False):
     def execute(session):
-        candidates = session.placement_candidates(allow_boxes=True)
-        labels = [item["label"] for item in candidates]
-
-        choice = pya.InputDialog.ask_item(
-            "ShapeForge — Place by Edges",
-            "Reference object A:",
-            labels,
-            0,
-        )
-        if choice is None:
+        pair = choose_placement_pair(session, allow_boxes=True, target_only=target_only)
+        if pair is None:
             return
-
-        index_a = labels.index(choice)
-        a = candidates[index_a]
-        b = candidates[1 - index_a]
+        a, b = pair
 
         direction = pya.InputDialog.ask_item(
             "ShapeForge — Place by Edges",
@@ -353,6 +390,7 @@ def place_by_edges():
 
         offset = session.parse_offset(offset_text)
 
+        a, b = current_placement_pair(session, a, b, target_only)
         actual_gap, actual_offset = session.place_by_edges(
             a, b, gap, offset, direction, alignment
         )
@@ -579,7 +617,7 @@ def regenerate_placement():
             str(error),
             pya.MessageBox.Ok,
         )
-def place_by_ports():
+def place_by_ports(target_only=False):
     if _session is None:
         pya.MessageBox.warning(
             "ShapeForge",
@@ -589,21 +627,10 @@ def place_by_ports():
         return
 
     try:
-        candidates = _session.placement_candidates()
-        labels = [item["label"] for item in candidates]
-
-        reference = pya.InputDialog.ask_item(
-            "ShapeForge — Place by Ports",
-            "Reference instance A (stays fixed):",
-            labels,
-            0,
-        )
-        if reference is None:
+        pair = choose_placement_pair(_session, allow_boxes=False, target_only=target_only)
+        if pair is None:
             return
-
-        index_a = labels.index(reference)
-        a = candidates[index_a]
-        b = candidates[1 - index_a]
+        a, b = pair
 
         names_a = [port.name for port in a["component"].ports]
         names_b = [port.name for port in b["component"].ports]
@@ -646,6 +673,7 @@ def place_by_ports():
 
         dy = _session.parse_offset(dy_text)
 
+        a, b = current_placement_pair(_session, a, b, target_only)
         actual_dx, actual_dy = _session.place_by_ports(
             a, port_a, b, port_b, dx, dy
         )
@@ -1121,7 +1149,7 @@ def start():
     _actions.append(action)
 
     action = pya.Action()
-    action.title = "Parameters Panel"
+    action.title = "ShapeForge Panel"
     action.on_triggered = show_parameters
     menu.insert_item("shapeforge_menu.end", "parameters_panel", action)
     _actions.append(action)

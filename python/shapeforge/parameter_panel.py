@@ -1,16 +1,15 @@
-"""Docked parameter editor using KLayout's Qt bindings."""
+"""Embeddable parameter editor using KLayout's Qt bindings."""
 
 import pya
 
 
-class ParameterPanel:
-    def __init__(self, main_window, session_getter):
+class ParameterEditor:
+    def __init__(self, parent, session_getter):
         self.session_getter = session_getter
         self.signature = None
         self.names = []
-        self.dock = pya.QDockWidget("ShapeForge Parameters", main_window)
-        self.dock.objectName = "shapeforge_parameters"
-        content = pya.QWidget(self.dock)
+        self.on_change = None
+        self.widget = content = pya.QWidget(parent)
         layout = pya.QVBoxLayout(content)
         self.status = pya.QLabel("Create or open a ShapeForge project.", content)
         self.status.wordWrap = True
@@ -41,15 +40,10 @@ class ParameterPanel:
         regenerate.clicked = self.regenerate
         layout.addWidget(regenerate)
         self.buttons.append(regenerate)
-        self.dock.widget = content
-        main_window.addDockWidget(pya.Qt.RightDockWidgetArea, self.dock)
-        self.timer = pya.QTimer(self.dock)
-        self.timer.timeout = self.refresh
-        self.timer.start(500)
         self.refresh()
 
     def refresh(self, *args):
-        if self.dock._destroyed():
+        if self.widget._destroyed():
             return
         session = self.session_getter()
         definitions, values = {}, {}
@@ -119,6 +113,8 @@ class ParameterPanel:
             session.validate()
             callback(session)
             self.refresh()
+            if self.on_change is not None:
+                self.on_change()
         except Exception as error:
             pya.MessageBox.warning("ShapeForge — Parameters", str(error), pya.MessageBox.Ok)
 
@@ -130,6 +126,18 @@ class ParameterPanel:
 
     def regenerate(self, *args):
         self.action(lambda session: session.regenerate_placement())
+
+class ParameterPanel(ParameterEditor):
+    """Compatibility wrapper; ShapeForgePanel embeds ParameterEditor directly."""
+    def __init__(self, main_window, session_getter):
+        self.dock = pya.QDockWidget("ShapeForge Parameters", main_window)
+        self.dock.objectName = "shapeforge_parameters"
+        super().__init__(self.dock, session_getter)
+        self.dock.widget = self.widget
+        main_window.addDockWidget(pya.Qt.RightDockWidgetArea, self.dock)
+        self.timer = pya.QTimer(self.dock)
+        self.timer.timeout = self.refresh
+        self.timer.start(500)
 
     def show(self):
         self.refresh()
