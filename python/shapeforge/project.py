@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 6
+VERSION = 7
 
 
 class ProjectError(ValueError):
@@ -137,8 +137,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4, 5, 6):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1, 2, 3, 4, 5 and 6.")
+    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4, 5, 6, 7):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 7.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -189,7 +189,8 @@ def validate_document(document):
     for kind, rows, keys in (
         ("instance", document["instances"], ("id", "component_id", "transform", "placement") +
          (("geometry_parameters",) if document["version"] >= 3 else ()) +
-         (("port_position",) if document["version"] >= 6 else ())),
+         (("port_position",) if document["version"] >= 6 else ()) +
+         (("via_center",) if document["version"] >= 7 else ())),
         ("box", document["boxes"], ("id", "layer", "box_dbu", "definition", "placement")),
     ):
         for entry in rows:
@@ -217,6 +218,15 @@ def validate_document(document):
                         raise ProjectError("Only project ports can have port_position.")
                     try:
                         validate_position(position, parameters)
+                    except ValueError as error:
+                        raise ProjectError(str(error)) from error
+                from shapeforge.technology import is_via_stack
+                via_center = entry.get("via_center")
+                if via_center is not None:
+                    if not is_via_stack(recipe):
+                        raise ProjectError("Only via stacks can have via_center.")
+                    try:
+                        validate_position(via_center, parameters)
                     except ValueError as error:
                         raise ProjectError(str(error)) from error
                 if is_project_port(recipe) and geometry_parameters is not None:
@@ -284,10 +294,10 @@ def validate_document(document):
                 allowed = ("bottom", "center", "top") if direction in ("right", "left") else ("left", "center", "right")
                 if relation["alignment"] not in allowed:
                     raise ProjectError("Invalid placement alignment.")
-        position = entry.get("port_position") if kind == "instance" else None
+        position = (entry.get("via_center") or entry.get("port_position")) if kind == "instance" else None
         if position is not None:
             if any(f"{axis}_center" in position for axis in ("x", "y")) and relation is not None:
-                raise ProjectError("Project port coordinates and placement cannot govern the same object.")
+                raise ProjectError("Instance centers and placement cannot govern the same object.")
             for axis in ("x", "y"):
                 value = position.get(f"{axis}_center")
                 if isinstance(value, dict):
@@ -415,6 +425,7 @@ def snapshot(session):
             "placement": _property(instance, "shapeforge.placement"),
             "geometry_parameters": _property(instance, "shapeforge.geometry_parameters"),
             "port_position": _property(instance, "shapeforge.port_position"),
+            "via_center": _property(instance, "shapeforge.via_center"),
         })
     for layer_index in session.layout.layer_indexes():
         info = session.layout.get_info(layer_index)
@@ -575,6 +586,8 @@ def prepare_project(path):
                 instance.set_property("shapeforge.geometry_parameters", json.dumps(entry["geometry_parameters"], allow_nan=False))
             if entry.get("port_position") is not None:
                 instance.set_property("shapeforge.port_position", json.dumps(entry["port_position"], allow_nan=False))
+            if entry.get("via_center") is not None:
+                instance.set_property("shapeforge.via_center", json.dumps(entry["via_center"], allow_nan=False))
             if entry["placement"] is not None:
                 instance.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
         for entry in document["boxes"]:

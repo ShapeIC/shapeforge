@@ -20,7 +20,7 @@ def validate_position(position, parameters):
         return
     if (not isinstance(position, dict) or set(position) - {"version", "x_center", "y_center"}
             or type(position.get("version")) is not int or position["version"] != 1):
-        raise ValueError("Invalid project port position version or fields.")
+        raise ValueError("Invalid center position version or fields.")
     for axis, anchors in (("x", ("left", "center", "right", "port")), ("y", ("bottom", "center", "top", "port"))):
         if f"{axis}_center" not in position:
             continue
@@ -30,9 +30,9 @@ def validate_position(position, parameters):
                     or set(value) - {"reference_id", "anchor", "offset_um", "port"}
                     or not isinstance(value["reference_id"], str) or not value["reference_id"]
                     or value["anchor"] not in anchors):
-                raise ValueError(f"Invalid {axis.upper()} project port reference.")
+                raise ValueError(f"Invalid {axis.upper()} center reference.")
             if value["anchor"] == "port" and (not isinstance(value.get("port"), str) or not value["port"]):
-                raise ValueError("A project port reference needs a port name.")
+                raise ValueError("A port reference needs a port name.")
             resolve_value(value.get("offset_um", 0), parameters)
         else:
             resolve_value(value, parameters)
@@ -142,7 +142,7 @@ def _rewrite_references(session, object_id, old_name, new_name):
     for layer in session.layout.layer_indexes():
         objects += [(s, s.property("shapeforge.object_id")) for s in session.cell.shapes(layer).each()]
     for obj, identity in objects:
-        for key in ("shapeforge.placement", "shapeforge.box", POSITION_PROPERTY):
+        for key in ("shapeforge.placement", "shapeforge.box", POSITION_PROPERTY, "shapeforge.via_center"):
             raw = obj.property(key)
             if raw is None:
                 continue
@@ -246,7 +246,7 @@ def usages(session, object_id):
         raw = item["object"].property("shapeforge.placement")
         if raw and json.loads(raw).get("reference_id") == object_id:
             result.append(f"{identity}: placement")
-        definition = item.get("definition") if item["type"] == "box" else item.get("port_position")
+        definition = item.get("definition") if item["type"] == "box" else (item.get("via_center") or item.get("port_position"))
         if definition and any(ref["reference_id"] == object_id for ref in session.box_position_references(definition)):
             result.append(f"{identity}: extents or center")
     return result

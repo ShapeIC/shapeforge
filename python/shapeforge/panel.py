@@ -10,6 +10,7 @@ ACTION_TITLES = {
     "make_box_parametric": "Make Box Parametric…",
     "define_box_extents": "Define Box Extents…",
     "define_box_center": "Define Box Center…",
+    "define_via_center": "Define Via Center…",
     "box_info": "Box Info",
     "edit_primitive_parameters": "Edit Primitive Parameters…",
     "selection_info": "Selection Info",

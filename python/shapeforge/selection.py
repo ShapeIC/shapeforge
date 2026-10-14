@@ -70,6 +70,12 @@ def selection_context(session):
             actions["show_ports"] = reason or (None if component is not None and len(component.ports) else "No linked component ports.")
             actions["keep_selected_instance_id"] = (None if duplicate and not arrays else "Available for copied instance IDs.")
             from shapeforge.project_ports import is_project_port
+            from shapeforge.technology import is_via_stack
+            if is_via_stack(recipe):
+                result["kind"] = "via_stack"
+                lines[0] = "Via stack"
+                lines.append("Via center: " + (target.property("shapeforge.via_center") or "free"))
+                actions["define_via_center"] = actions["edit_primitive_parameters"]
             if is_project_port(recipe):
                 result["kind"] = "project_port"
                 lines[0] = "Project port: " + recipe["arguments"]["pinName"]
@@ -94,10 +100,10 @@ def selection_context(session):
         actions["panel_place_by_edges"] = base or ("Extents or centers already govern this box's position." if governed else None)
         if instance:
             actions["panel_place_by_ports"] = base or actions["show_ports"]
-            raw_position = target.property("shapeforge.port_position")
+            raw_position = target.property("shapeforge.via_center") or target.property("shapeforge.port_position")
             if raw_position and any(f"{axis}_center" in json.loads(raw_position) for axis in ("x", "y")):
                 for name in ("panel_place_by_edges", "panel_place_by_ports"):
-                    actions[name] = "Port coordinates control its position. Free both coordinates to use placement."
+                    actions[name] = "Centers control its position. Free both coordinates to use placement."
         actions["regenerate_placement"] = base
         # Full dependency checks can fail elsewhere in the layout. Keep inspection
         # and ID recovery usable instead of making the whole panel disappear.
@@ -109,7 +115,7 @@ def selection_context(session):
             if instance and not any(item["type"] == "instance" and item["component"] is not None and len(item["component"].ports) for item in references):
                 actions["panel_place_by_ports"] = actions["panel_place_by_ports"] or "No other linked reference with ports."
         except Exception as error:
-            for name in ("panel_place_by_edges", "panel_place_by_ports", "edit_placement", "define_box_extents", "define_box_center", "regenerate_placement"):
+            for name in ("panel_place_by_edges", "panel_place_by_ports", "edit_placement", "define_box_extents", "define_box_center", "define_via_center", "regenerate_placement"):
                 if name in actions:
                     actions[name] = actions[name] or str(error)
         if reason:

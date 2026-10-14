@@ -22,6 +22,11 @@ _constructors = {
     "project_port": ("component", "pinName", "center", "width", "length", "orientation", "pinLayer", "pinTextLayer"),
 }
 _helpers = {"via_stack": "_populate_via_stack", "project_port": "_add_port"}
+
+
+def is_via_stack(recipe):
+    return bool(recipe and recipe.get("provider") == "shapeic-cellkit-technology"
+                and recipe.get("generator") == "via_stack")
 METALS = ["Metal1", "Metal2", "Metal3", "Metal4", "Metal5", "TopMetal1", "TopMetal2"]
 _modules = {}
 

@@ -274,12 +274,44 @@ class Session:
             updates[object_id] = generated
         return updates
 
-    def regeneration_plan(self):
+    def regeneration_plan(self, via_center_replacement=None):
         from shapeforge.project_ports import validate_names
         validate_names(self)
         components = self.primitive_update_plan()
-        updates, _ = self.placement_plan(component_replacements=components)
+        updates, _ = self.placement_plan(component_replacements=components,
+                                         via_center_replacement=via_center_replacement)
         return components, updates
+
+    def define_via_center(self, position):
+        """Set independent world X/Y centers and regenerate in one transaction."""
+        from shapeforge.technology import is_via_stack
+        from shapeforge.project_ports import validate_position
+        instance, recipe = self.selected_primitive_instance()
+        if not is_via_stack(recipe):
+            raise ValueError("Select a registered via_stack instance.")
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        validate_position(position, self.parameters())
+        position = dict(position) if position is not None else None
+        if position is not None and not any(f"{axis}_center" in position for axis in ("x", "y")):
+            position = None
+        identity = instance.property("shapeforge.instance_id")
+        serialized = None if position is None else json.dumps(position, allow_nan=False)
+        components, updates = self.regeneration_plan(via_center_replacement=(identity, position))
+        view = self.cellview.view()
+        self.hide_ports()
+        view.cancel()
+        view.transaction("ShapeForge: define via center")
+        try:
+            self.apply_regeneration_plan(components, updates)
+            instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == identity)
+            if serialized is None:
+                instance.delete_property("shapeforge.via_center")
+            else:
+                instance.set_property("shapeforge.via_center", serialized)
+        finally:
+            view.commit()
+        view.add_missing_layers()
 
     def apply_regeneration_plan(self, components, updates):
         for object_id, generated in components.items():
@@ -994,14 +1026,16 @@ class Session:
                 for field, value in input_expressions(json.loads(raw)):
                     if name in references(value):
                         usages.append(f"{identity}: primitive {field}")
-            raw = obj.property("shapeforge.port_position")
-            if raw is not None:
-                for axis in ("x", "y"):
-                    value = json.loads(raw).get(f"{axis}_center")
-                    if value is not None:
-                        expression = value.get("offset_um", 0) if isinstance(value, dict) else value
-                        if name in references(expression):
-                            usages.append(f"{identity}: project port {axis.upper()} center")
+            for property_key, label in (("shapeforge.port_position", "project port"),
+                                        ("shapeforge.via_center", "via stack")):
+                raw = obj.property(property_key)
+                if raw is not None:
+                    for axis in ("x", "y"):
+                        value = json.loads(raw).get(f"{axis}_center")
+                        if value is not None:
+                            expression = value.get("offset_um", 0) if isinstance(value, dict) else value
+                            if name in references(expression):
+                                usages.append(f"{identity}: {label} {axis.upper()} center")
             raw = obj.property("shapeforge.placement")
             if raw is not None:
                 relation = json.loads(raw)
@@ -1168,9 +1202,15 @@ class Session:
         finally:
             view.commit()
 
-    def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None):
+    def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None,
+                       via_center_replacement=None):
         """Plan dimensions, referenced extents and placement without mutation."""
         objects = self.placement_objects(box_replacement=box_replacement)
+        if via_center_replacement is not None:
+            identity, position = via_center_replacement
+            if identity not in objects:
+                raise RuntimeError("The target via stack no longer exists.")
+            objects[identity]["via_center"] = position
         for object_id, generated in (component_replacements or {}).items():
             objects[object_id]["component"] = generated.component
             objects[object_id]["local_box"] = generated.component.kdb_cell.dbbox()
@@ -1203,10 +1243,10 @@ class Session:
                 dependencies[target_id].update(
                     ref["reference_id"] for ref in position_refs)
         for target_id, item in objects.items():
-            position = item.get("port_position")
+            position = item.get("via_center") or item.get("port_position")
             if position and any(f"{axis}_center" in position for axis in ("x", "y")):
                 if target_id in relations:
-                    raise ValueError("Project port coordinates control its position. Remove placement or free both coordinates first.")
+                    raise ValueError("Center coordinates control this object's position. Remove placement or free both coordinates first.")
                 dependencies[target_id].update(ref["reference_id"] for ref in self.box_position_references(position))
         for target_id, relation in relations.items():
             reference_id = relation["reference_id"]
@@ -1240,17 +1280,24 @@ class Session:
             if item["type"] == "box":
                 transforms[object_id] = self.box_extent_transform(
                     item, objects, transforms)
-            position = item.get("port_position")
+            position = item.get("via_center") or item.get("port_position")
             governed = position and any(f"{axis}_center" in position for axis in ("x", "y"))
             if governed:
                 transform = transforms[object_id]
                 coordinates = [transform.disp.x, transform.disp.y]
+                # Via centers refer to the visible bounding box, independent of
+                # the generator origin, rotation, reflection and magnification.
+                center_offset = [0, 0]
+                if item.get("via_center"):
+                    linear = pya.DCplxTrans(transform.mag, transform.angle, transform.is_mirror(), 0, 0)
+                    bounds = self.placement_bbox(item, linear)
+                    center_offset = [(bounds.left + bounds.right) / 2, (bounds.bottom + bounds.top) / 2]
                 for index, axis in enumerate(("x", "y")):
                     if f"{axis}_center" in position:
                         value = position[f"{axis}_center"]
                         coordinate = (self.extent_coordinate(value, axis, objects, transforms)
                                       if isinstance(value, dict) else self.resolve_offset(value))
-                        coordinates[index] = self.dbu_to_um(self.snap_um_to_dbu(coordinate))
+                        coordinates[index] = self.dbu_to_um(self.snap_um_to_dbu(coordinate - center_offset[index]))
                 transforms[object_id] = pya.DCplxTrans(transform.mag, transform.angle, transform.is_mirror(), *coordinates)
             relation = relations.get(object_id)
             if relation is not None:
@@ -1768,15 +1815,23 @@ class Session:
             component_id = self.component_id_for_instance(instance)
             raw = instance.property("shapeforge.port_position")
             position = json.loads(raw) if raw else None
+            raw_center = instance.property("shapeforge.via_center")
+            via_center = json.loads(raw_center) if raw_center else None
             from shapeforge.project_ports import is_project_port, validate_position
+            from shapeforge.technology import is_via_stack
             recipe = self.component_recipes.get(component_id)
             if position is not None:
                 if not is_project_port(recipe):
                     raise ValueError("Only project ports can have a port position definition.")
                 validate_position(position, self.parameters())
+            if via_center is not None:
+                if not is_via_stack(recipe):
+                    raise ValueError("Only via stacks can have a via center definition.")
+                validate_position(via_center, self.parameters())
             add({"id": object_id, "type": "instance", "object": instance,
                  "instance": instance, "component": self.components.get(component_id),
                  "port_position": position,
+                 "via_center": via_center,
                  "name": cell.name, "label": f"{'Project port' if is_project_port(recipe) else 'Instance'} {cell.name} | {object_id}"})
         for shape, definition in self.parametric_boxes():
             object_id = shape.property("shapeforge.object_id")

@@ -125,7 +125,7 @@ def show_parameters():
     _parameter_panel.show()
 
 
-def ask_project_port_position(session, object_id, previous):
+def ask_project_port_position(session, object_id, previous, title="ShapeForge — Project Port Position"):
     objects = session.placement_objects()
     position = {"version": 1}
     for axis in ("x", "y"):
@@ -133,13 +133,13 @@ def ask_project_port_position(session, object_id, previous):
         existing = (previous or {}).get(key)
         modes = ["Free (move in layout)", "Coordinate", "Object anchor"]
         default = 0 if existing is None else (2 if isinstance(existing, dict) else 1)
-        mode = pya.InputDialog.ask_item("ShapeForge — Project Port Position", f"{axis.upper()} center:", modes, default)
+        mode = pya.InputDialog.ask_item(title, f"{axis.upper()} center:", modes, default)
         if mode is None:
             return
         if mode == modes[0]:
             continue
         if mode == "Coordinate":
-            text = pya.InputDialog.ask_string("ShapeForge — Project Port Position", f"{axis.upper()} (µm), number or expression:",
+            text = pya.InputDialog.ask_string(title, f"{axis.upper()} (µm), number or expression:",
                                              str(existing) if existing is not None and not isinstance(existing, dict) else "0")
             if text is None:
                 return
@@ -147,7 +147,8 @@ def ask_project_port_position(session, object_id, previous):
         else:
             if not any(identity != object_id for identity in objects):
                 raise ValueError("No other registered reference object is available.")
-            reference = yield from choose_box_reference(session, objects, object_id, axis, "center", existing if isinstance(existing, dict) else None)
+            reference = yield from choose_box_reference(session, objects, object_id, axis, "center",
+                                                       existing if isinstance(existing, dict) else None, title=title)
             if reference is None:
                 return
             position[key] = reference
@@ -212,6 +213,26 @@ def edit_project_port():
 def delete_project_port():
     from shapeforge.project_ports import remove
     run_session_action(lambda session: remove(session, selected_project_port_id(session)))
+
+
+def define_via_center():
+    def execute(session):
+        from shapeforge.technology import is_via_stack
+        instance, recipe = session.selected_primitive_instance()
+        if not is_via_stack(recipe):
+            raise ValueError("Select a registered via_stack instance.")
+        identity = instance.property("shapeforge.instance_id")
+        raw = instance.property("shapeforge.via_center")
+        position = yield from ask_project_port_position(session, identity, json.loads(raw) if raw else None,
+                                                        title="ShapeForge — Via Center")
+        if position is None:
+            return
+        current, _ = session.selected_primitive_instance()
+        if current.property("shapeforge.instance_id") != identity:
+            raise ValueError("The selected via stack changed. Retry the action.")
+        session.define_via_center(position)
+        pya.MessageBox.info("ShapeForge — Via Center", "Via center saved and regenerated.", pya.MessageBox.Ok)
+    run_session_action(execute)
 
 
 def save_project():
@@ -1107,8 +1128,8 @@ def keep_selected_box_id():
 
 
 
-def choose_box_reference(session, objects, box_id, axis, end, existing=None):
-    title = "ShapeForge — Box Center" if end == "center" else "ShapeForge — Box Extents"
+def choose_box_reference(session, objects, box_id, axis, end, existing=None, title=None):
+    title = title or ("ShapeForge — Box Center" if end == "center" else "ShapeForge — Box Extents")
     references = [item for key, item in sorted(objects.items()) if key != box_id]
     if not references:
         raise RuntimeError("Insert another managed object to use as a reference.")
@@ -1516,6 +1537,7 @@ def start():
     for name, title, callback in [
         ("define_box_extents", "Define Box Extents...", define_box_extents),
         ("define_box_center", "Define Box Center...", define_box_center),
+        ("define_via_center", "Define Via Center...", define_via_center),
         ("box_info", "Box Info", box_info),
     ]:
         action = pya.Action()
