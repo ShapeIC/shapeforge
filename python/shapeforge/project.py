@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 5
+VERSION = 6
 
 
 class ProjectError(ValueError):
@@ -137,8 +137,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4, 5):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1, 2, 3, 4 and 5.")
+    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4, 5, 6):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1, 2, 3, 4, 5 and 6.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -179,13 +179,17 @@ def validate_document(document):
             raise ProjectError("External Python recipes require project version 4.")
         if entry["recipe"]["provider"] == "shapeic-cellkit-technology" and document["version"] < 5:
             raise ProjectError("CellKit technology recipes require project version 5.")
+        if (entry["recipe"]["provider"] == "shapeic-cellkit-technology"
+                and entry["recipe"]["generator"] in ("via_stack", "project_port") and document["version"] < 6):
+            raise ProjectError("Via stacks and project ports require project version 6.")
         pdk = entry["recipe"].get("pdk")
         if pdk is not None and pdk != environment["pdk"]:
             raise ProjectError("Component PDK differs from the project PDK.")
     objects = {}
     for kind, rows, keys in (
         ("instance", document["instances"], ("id", "component_id", "transform", "placement") +
-         (("geometry_parameters",) if document["version"] >= 3 else ())),
+         (("geometry_parameters",) if document["version"] >= 3 else ()) +
+         (("port_position",) if document["version"] >= 6 else ())),
         ("box", document["boxes"], ("id", "layer", "box_dbu", "definition", "placement")),
     ):
         for entry in rows:
@@ -205,6 +209,19 @@ def validate_document(document):
                         validate_input_definition(geometry_parameters, components[entry["component_id"]], parameters)
                     except Exception as error:
                         raise ProjectError(f"Instance {entry['id']} geometry: {error}") from error
+                from shapeforge.project_ports import is_project_port, validate_position
+                recipe = components[entry["component_id"]]
+                position = entry.get("port_position")
+                if position is not None:
+                    if not is_project_port(recipe):
+                        raise ProjectError("Only project ports can have port_position.")
+                    try:
+                        validate_position(position, parameters)
+                    except ValueError as error:
+                        raise ProjectError(str(error)) from error
+                if is_project_port(recipe) and geometry_parameters is not None:
+                    if geometry_parameters["values"]["pinName"] != recipe["arguments"]["pinName"]:
+                        raise ProjectError("Project port name bindings must match the effective recipe; use Edit Project Port to rename.")
                 transform = _object(entry["transform"], ("mag", "angle", "mirror", "x_um", "y_um"), "transform")
                 for key in ("mag", "angle", "x_um", "y_um"):
                     _number(transform[key], f"transform.{key}", positive=key == "mag")
@@ -222,6 +239,11 @@ def validate_document(document):
                     raise ProjectError("box_dbu must contain four integer DBU coordinates.")
                 if box[2] <= box[0] or box[3] <= box[1]:
                     raise ProjectError("Box dimensions must be positive.")
+    from shapeforge.project_ports import is_project_port
+    names = [components[entry["component_id"]]["arguments"]["pinName"] for entry in document["instances"]
+             if is_project_port(components[entry["component_id"]])]
+    if len(names) != len(set(names)):
+        raise ProjectError("Duplicate project port names. Rename copied ports explicitly.")
     dependencies = {key: set() for key in objects}
     for object_id, (kind, entry) in objects.items():
         relation = entry["placement"]
@@ -262,6 +284,19 @@ def validate_document(document):
                 allowed = ("bottom", "center", "top") if direction in ("right", "left") else ("left", "center", "right")
                 if relation["alignment"] not in allowed:
                     raise ProjectError("Invalid placement alignment.")
+        position = entry.get("port_position") if kind == "instance" else None
+        if position is not None:
+            if any(f"{axis}_center" in position for axis in ("x", "y")) and relation is not None:
+                raise ProjectError("Project port coordinates and placement cannot govern the same object.")
+            for axis in ("x", "y"):
+                value = position.get(f"{axis}_center")
+                if isinstance(value, dict):
+                    reference = value["reference_id"]
+                    if reference not in objects:
+                        raise ProjectError(f"Missing reference object: {reference}.")
+                    if value["anchor"] == "port" and objects[reference][0] != "instance":
+                        raise ProjectError("Port coordinates require linked instances.")
+                    dependencies[object_id].add(reference)
         if kind == "box":
             definition = entry["definition"]
             if not isinstance(definition, dict):
@@ -379,6 +414,7 @@ def snapshot(session):
                           "y_um": transform.disp.y},
             "placement": _property(instance, "shapeforge.placement"),
             "geometry_parameters": _property(instance, "shapeforge.geometry_parameters"),
+            "port_position": _property(instance, "shapeforge.port_position"),
         })
     for layer_index in session.layout.layer_indexes():
         info = session.layout.get_info(layer_index)
@@ -537,6 +573,8 @@ def prepare_project(path):
             instance.set_property("shapeforge.component_id", component_id)
             if entry.get("geometry_parameters") is not None:
                 instance.set_property("shapeforge.geometry_parameters", json.dumps(entry["geometry_parameters"], allow_nan=False))
+            if entry.get("port_position") is not None:
+                instance.set_property("shapeforge.port_position", json.dumps(entry["port_position"], allow_nan=False))
             if entry["placement"] is not None:
                 instance.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
         for entry in document["boxes"]:

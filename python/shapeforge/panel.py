@@ -3,8 +3,10 @@
 import pya
 from shapeforge.parameter_panel import ParameterEditor
 from shapeforge.selection import selection_context
+from shapeforge.ports_panel import PortsEditor
 
 ACTION_TITLES = {
+    "edit_project_port": "Edit Project Port…", "delete_project_port": "Delete Project Port",
     "make_box_parametric": "Make Box Parametric…",
     "define_box_extents": "Define Box Extents…",
     "define_box_center": "Define Box Center…",
@@ -50,6 +52,8 @@ class ShapeForgePanel:
         layout.addStretch(1)
         self.selection.widget = content
         self.tabs.addTab(self.selection, "Selection")
+        self.ports = PortsEditor(self.tabs, session_getter, self.refresh)
+        self.tabs.addTab(self.ports.widget, "Ports")
         self.dock.widget = self.tabs
         main_window.addDockWidget(pya.Qt.RightDockWidgetArea, self.dock)
         self.timer = pya.QTimer(self.dock)
@@ -61,6 +65,7 @@ class ShapeForgePanel:
         if self.dock._destroyed():
             return
         self.parameters.refresh()
+        self.ports.refresh()
         session = self.session_getter()
         context = selection_context(session)
         if session is not None and hasattr(self.main_window, "current_view"):

@@ -69,6 +69,13 @@ def selection_context(session):
             actions["edit_primitive_parameters"] = reason or (None if object_id and editable_recipe else "Requires a registered generator recipe and component.")
             actions["show_ports"] = reason or (None if component is not None and len(component.ports) else "No linked component ports.")
             actions["keep_selected_instance_id"] = (None if duplicate and not arrays else "Available for copied instance IDs.")
+            from shapeforge.project_ports import is_project_port
+            if is_project_port(recipe):
+                result["kind"] = "project_port"
+                lines[0] = "Project port: " + recipe["arguments"]["pinName"]
+                lines.append("Position: " + (target.property("shapeforge.port_position") or "free"))
+                actions["edit_project_port"] = actions.pop("edit_primitive_parameters")
+                actions["delete_project_port"] = reason
         else:
             lines.append(f"Layer: {session.layout.get_info(obj.layer).to_s()}")
             lines.append("Definition: " + (json.dumps(definition, ensure_ascii=False) if definition else "not parametric"))
@@ -87,6 +94,10 @@ def selection_context(session):
         actions["panel_place_by_edges"] = base or ("Extents or centers already govern this box's position." if governed else None)
         if instance:
             actions["panel_place_by_ports"] = base or actions["show_ports"]
+            raw_position = target.property("shapeforge.port_position")
+            if raw_position and any(f"{axis}_center" in json.loads(raw_position) for axis in ("x", "y")):
+                for name in ("panel_place_by_edges", "panel_place_by_ports"):
+                    actions[name] = "Port coordinates control its position. Free both coordinates to use placement."
         actions["regenerate_placement"] = base
         # Full dependency checks can fail elsewhere in the layout. Keep inspection
         # and ID recovery usable instead of making the whole panel disappear.

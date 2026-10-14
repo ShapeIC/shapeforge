@@ -18,13 +18,30 @@ _constructors = {
     "ihp_mos_device": ("mos_core", "tech", "kind", "length", "wf", "nf"),
     "bussed_mos_device": ("gf", "mos_core", "tech", "kind", "length", "wf", "nf"),
     "interdigitated_mos_devices": ("gf", "cell_name", "mos_core", "tech", "kind", "length", "wf", "nf", "shared_gates"),
+    "via_stack": ("c", "tech", "column_width", "row_width", "center", "bottom_layer", "top_layer"),
+    "project_port": ("component", "pinName", "center", "width", "length", "orientation", "pinLayer", "pinTextLayer"),
 }
+_helpers = {"via_stack": "_populate_via_stack", "project_port": "_add_port"}
+METALS = ["Metal1", "Metal2", "Metal3", "Metal4", "Metal5", "TopMetal1", "TopMetal2"]
 _modules = {}
 
 
 def parameter_specs(generator, pdk="ihp-sg13g2"):
     if pdk != "ihp-sg13g2" or generator not in _constructors:
         raise ValueError(f"Unsupported technology constructor: {pdk} / {generator}.")
+    if generator == "via_stack":
+        layers = ["Activ", "GatPoly"] + METALS
+        return {"width": {"type": "float", "default": 10., "unit": "µm"},
+                "height": {"type": "float", "default": 10., "unit": "µm"},
+                "bottom_layer": {"type": "str", "default": "Metal1", "choices": layers},
+                "top_layer": {"type": "str", "default": "Metal2", "choices": layers}}
+    if generator == "project_port":
+        return {"pinName": {"type": "str", "default": "port1"},
+                "width": {"type": "float", "default": 1., "unit": "µm"},
+                "length": {"type": "float", "default": 1., "unit": "µm"},
+                "pinLayer": {"type": "str", "default": "Metal1pin", "choices": [metal + "pin" for metal in METALS]},
+                "pinTextLayer": {"type": "str", "default": "Metal1text", "choices": [""] + [metal + "text" for metal in METALS],
+                                 "choice_labels": {"": "None (no label)"}}}
     specs = {
         "kind": {"type": "str", "default": "nmos", "choices": ["nmos", "pmos"]},
         "length": {"type": "float", "default": .4, "unit": "µm"},
@@ -41,6 +58,22 @@ def resolve_inputs(generator, values, parameters, pdk="ihp-sg13g2", defaults=Fal
     if defaults:
         values = {**{name: spec["default"] for name, spec in specs.items()}, **values}
     arguments = resolve_arguments(values, {name: spec["type"] for name, spec in specs.items()}, parameters)
+    for name, spec in specs.items():
+        if "choices" in spec and arguments[name] not in spec["choices"]:
+            raise ValueError(f"Unsupported {name}: {arguments[name]!r}.")
+    if generator in ("via_stack", "project_port"):
+        dimensions = ("width", "height") if generator == "via_stack" else ("width", "length")
+        if any(arguments[name] <= 0 for name in dimensions):
+            raise ValueError("Via and pin dimensions must be positive.")
+        if generator == "project_port" and not arguments["pinName"].strip():
+            raise ValueError("Project port name must not be empty.")
+        if generator == "via_stack":
+            order = ["Activ", "GatPoly"] + METALS
+            lower, upper = arguments["bottom_layer"], arguments["top_layer"]
+            rank = lambda layer: 0 if layer in ("Activ", "GatPoly") else order.index(layer) - 1
+            if rank(lower) >= rank(upper):
+                raise ValueError("Via stack top layer must be above its bottom layer.")
+        return arguments
     if arguments["kind"] not in ("nmos", "pmos"):
         raise ValueError("Technology MOS kind must be nmos or pmos.")
     if arguments["length"] <= 0 or arguments["wf"] <= 0 or arguments["nf"] <= 0:
@@ -70,10 +103,11 @@ def _module(catalog):
 
 
 def _function(module, generator):
-    function = getattr(module, "_" + generator, None)
+    source_name = _helpers.get(generator, "_" + generator)
+    function = getattr(module, source_name, None)
     expected = _constructors[generator]
     if not callable(function):
-        raise ValueError(f"CellKit is missing technology constructor _{generator}.")
+        raise ValueError(f"CellKit is missing technology constructor {source_name}.")
     signature = inspect.signature(function)
     if tuple(signature.parameters) != expected or any(
         p.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
@@ -91,7 +125,7 @@ def available_technology_pcells(catalog):
     module, _ = _module(catalog)
     for generator in _constructors:
         _function(module, generator)
-    return {"Technology — " + name: name for name in _constructors}
+    return {"Technology — " + name: name for name in _constructors if name != "project_port"}
 
 
 def generate_technology(generator, values, pdk="ihp-sg13g2", parameters=None):
@@ -123,9 +157,27 @@ def generate_technology(generator, values, pdk="ihp-sg13g2", parameters=None):
             if not isinstance(backend, tuple) or len(backend) != 4:
                 raise ValueError("Incompatible IHP _backend(); expected gf, cells, mos_core, tech.")
             backend_gf, _, mos_core, tech = backend
-            hidden = {"gf": backend_gf, "mos_core": mos_core, "tech": tech, "cell_name": prefix}
-            call = {name: arguments[name] if name in arguments else hidden[name] for name in _constructors[generator]}
-            component = function(**call)
+            if generator in ("via_stack", "project_port"):
+                component = backend_gf.Component(prefix)
+                if generator == "via_stack":
+                    pitch = tech.via1_size_rf + tech.via1_spacing_wide
+                    if any(int((arguments[axis] - tech.via1_enc + tech.via1_spacing_wide) / pitch) < 1 for axis in ("width", "height")):
+                        raise ValueError("Via dimensions are too small for at least one via row and column.")
+                    ref = function(component, tech, column_width=arguments["height"], row_width=arguments["width"],
+                                   center=(0, 0), bottom_layer=arguments["bottom_layer"], top_layer=arguments["top_layer"])
+                    for port in ref.ports:
+                        component.add_port(name=port.name, port=port)
+                else:
+                    function(component, arguments["pinName"], (0, 0), arguments["width"], arguments["length"],
+                             orientation=0, pinLayer=arguments["pinLayer"], pinTextLayer=arguments["pinTextLayer"] or None)
+                    if len(component.ports) != 1 or component.ports[arguments["pinName"]].orientation != 0:
+                        raise ValueError("CellKit must create exactly one local project port with orientation 0.")
+                    if component.dbbox().width() <= 0 or component.dbbox().height() <= 0:
+                        raise ValueError("Pin dimensions collapse at the backend DBU.")
+            else:
+                hidden = {"gf": backend_gf, "mos_core": mos_core, "tech": tech, "cell_name": prefix}
+                call = {name: arguments[name] if name in arguments else hidden[name] for name in _constructors[generator]}
+                component = function(**call)
             if not isinstance(component, gf.Component):
                 raise ValueError("Technology constructor must return a gdsfactory.Component.")
             _generated[key] = GeneratedComponent(component, recipe)

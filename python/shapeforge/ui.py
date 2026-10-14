@@ -51,11 +51,12 @@ def ask_component_arguments(generator, specs, previous, session):
         default = previous.get(name, spec["default"])
         if "choices" in spec:
             choices = spec["choices"]
-            answer = pya.InputDialog.ask_item("ShapeForge — " + generator, name + ":", choices,
+            labels = [spec.get("choice_labels", {}).get(choice, choice) for choice in choices]
+            answer = pya.InputDialog.ask_item("ShapeForge — " + generator, name + ":", labels,
                                             choices.index(default) if default in choices else 0)
             if answer is None:
                 return
-            values[name] = answer
+            values[name] = choices[labels.index(answer)]
             continue
         if kind == "bool":
             answer = pya.InputDialog.ask_item("ShapeForge — " + generator, name + " (bool):",
@@ -120,6 +121,91 @@ def show_parameters():
         from shapeforge.panel import ShapeForgePanel
         _parameter_panel = ShapeForgePanel(pya.Application.instance().main_window(), lambda: _session)
     _parameter_panel.show()
+
+
+def ask_project_port_position(session, object_id, previous):
+    objects = session.placement_objects()
+    position = {"version": 1}
+    for axis in ("x", "y"):
+        key = f"{axis}_center"
+        existing = (previous or {}).get(key)
+        modes = ["Free (move in layout)", "Coordinate", "Object anchor"]
+        default = 0 if existing is None else (2 if isinstance(existing, dict) else 1)
+        mode = pya.InputDialog.ask_item("ShapeForge — Project Port Position", f"{axis.upper()} center:", modes, default)
+        if mode is None:
+            return
+        if mode == modes[0]:
+            continue
+        if mode == "Coordinate":
+            text = pya.InputDialog.ask_string("ShapeForge — Project Port Position", f"{axis.upper()} (µm), number or expression:",
+                                             str(existing) if existing is not None and not isinstance(existing, dict) else "0")
+            if text is None:
+                return
+            position[key] = session.parse_offset(text)
+        else:
+            if not any(identity != object_id for identity in objects):
+                raise ValueError("No other registered reference object is available.")
+            reference = choose_box_reference(session, objects, object_id, axis, "center", existing if isinstance(existing, dict) else None)
+            if reference is None:
+                return
+            position[key] = reference
+    return position
+
+
+def project_port_dialog(session, object_id=None):
+    from shapeforge.project_ports import rows, create, edit
+    specs = technology_specs("project_port", session.pdk)
+    previous, position, angle = {}, {"version": 1}, 0
+    if object_id is not None:
+        matches = [row for row in rows(session) if row["id"] == object_id]
+        if len(matches) != 1 or matches[0]["duplicate_id"]:
+            raise ValueError("Resolve the copied port ID with Keep Selected Instance ID first.")
+        previous, position, angle = matches[0]["values"], matches[0]["position"], matches[0]["orientation"]
+    else:
+        names = {row["name"] for row in rows(session)}
+        index = 1
+        while f"port{index}" in names:
+            index += 1
+        previous["pinName"] = f"port{index}"
+    values = ask_component_arguments("Project Port", specs, previous, session)
+    if values is None:
+        return
+    choices = ["0", "90", "180", "270"]
+    keep = f"Keep current ({angle:g}°)"
+    if str(int(angle)) not in choices or angle != int(angle):
+        choices.append(keep)
+    choice = pya.InputDialog.ask_item("ShapeForge — Project Port", "Orientation (degrees):", choices,
+                                    choices.index(str(int(angle))) if str(int(angle)) in choices and angle == int(angle) else len(choices) - 1)
+    if choice is None:
+        return
+    orientation = None if choice == keep else int(choice)
+    position = ask_project_port_position(session, object_id, position)
+    if position is None:
+        return
+    if object_id is None:
+        return create(session, values, position, orientation or 0)
+    return edit(session, object_id, values, position, orientation)
+
+
+def add_project_port():
+    run_session_action(lambda session: project_port_dialog(session))
+
+
+def selected_project_port_id(session):
+    from shapeforge.project_ports import locate
+    instance, _ = session.selected_primitive_instance()
+    identity = instance.property("shapeforge.instance_id")
+    locate(session, identity)
+    return identity
+
+
+def edit_project_port():
+    run_session_action(lambda session: project_port_dialog(session, selected_project_port_id(session)))
+
+
+def delete_project_port():
+    from shapeforge.project_ports import remove
+    run_session_action(lambda session: remove(session, selected_project_port_id(session)))
 
 
 def save_project():
@@ -1157,6 +1243,7 @@ def start():
     for name, title, callback in [
         ("save_project", "Save Project...", save_project),
         ("open_project", "Open Project...", open_project),
+        ("add_project_port", "Add Project Port...", add_project_port),
     ]:
         action = pya.Action()
         action.title = title

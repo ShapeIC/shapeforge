@@ -82,6 +82,8 @@ class Session:
         return self.insert_generated(generated, arguments)
 
     def insert_technology_pcell(self, generator, arguments):
+        if generator == "project_port":
+            raise ValueError("Use Add Project Port to define the project interface.")
         from shapeforge.technology import generate_technology
         self.validate()
         if not self.layout.is_editable():
@@ -193,6 +195,11 @@ class Session:
     def edit_primitive_parameters(self, geometry):
         """Replace only the selected instance's component; keep its identity and transform."""
         instance, recipe = self.selected_primitive_instance()
+        from shapeforge.project_ports import is_project_port, edit, POSITION_PROPERTY
+        if is_project_port(recipe):
+            raw = instance.property(POSITION_PROPERTY)
+            edit(self, instance.property("shapeforge.instance_id"), geometry, json.loads(raw) if raw else None)
+            return True
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
         from shapeforge.project import _geometry_signature
@@ -268,6 +275,8 @@ class Session:
         return updates
 
     def regeneration_plan(self):
+        from shapeforge.project_ports import validate_names
+        validate_names(self)
         components = self.primitive_update_plan()
         updates, _ = self.placement_plan(component_replacements=components)
         return components, updates
@@ -985,6 +994,14 @@ class Session:
                 for field, value in input_expressions(json.loads(raw)):
                     if name in references(value):
                         usages.append(f"{identity}: primitive {field}")
+            raw = obj.property("shapeforge.port_position")
+            if raw is not None:
+                for axis in ("x", "y"):
+                    value = json.loads(raw).get(f"{axis}_center")
+                    if value is not None:
+                        expression = value.get("offset_um", 0) if isinstance(value, dict) else value
+                        if name in references(expression):
+                            usages.append(f"{identity}: project port {axis.upper()} center")
             raw = obj.property("shapeforge.placement")
             if raw is not None:
                 relation = json.loads(raw)
@@ -1185,6 +1202,12 @@ class Session:
                     )
                 dependencies[target_id].update(
                     ref["reference_id"] for ref in position_refs)
+        for target_id, item in objects.items():
+            position = item.get("port_position")
+            if position and any(f"{axis}_center" in position for axis in ("x", "y")):
+                if target_id in relations:
+                    raise ValueError("Project port coordinates control its position. Remove placement or free both coordinates first.")
+                dependencies[target_id].update(ref["reference_id"] for ref in self.box_position_references(position))
         for target_id, relation in relations.items():
             reference_id = relation["reference_id"]
             dependencies[target_id].add(reference_id)
@@ -1217,6 +1240,18 @@ class Session:
             if item["type"] == "box":
                 transforms[object_id] = self.box_extent_transform(
                     item, objects, transforms)
+            position = item.get("port_position")
+            governed = position and any(f"{axis}_center" in position for axis in ("x", "y"))
+            if governed:
+                transform = transforms[object_id]
+                coordinates = [transform.disp.x, transform.disp.y]
+                for index, axis in enumerate(("x", "y")):
+                    if f"{axis}_center" in position:
+                        value = position[f"{axis}_center"]
+                        coordinate = (self.extent_coordinate(value, axis, objects, transforms)
+                                      if isinstance(value, dict) else self.resolve_offset(value))
+                        coordinates[index] = self.dbu_to_um(self.snap_um_to_dbu(coordinate))
+                transforms[object_id] = pya.DCplxTrans(transform.mag, transform.angle, transform.is_mirror(), *coordinates)
             relation = relations.get(object_id)
             if relation is not None:
                 reference_id = relation["reference_id"]
@@ -1226,7 +1261,7 @@ class Session:
                     transform_b=transforms[object_id])
                 transforms[object_id] = transform
                 offsets[object_id] = (dx, dy)
-            if item["type"] == "box" or relation is not None:
+            if item["type"] == "box" or relation is not None or governed:
                 order.append(object_id)
             path.pop()
             visiting.remove(object_id)
@@ -1731,9 +1766,18 @@ class Session:
                 raise RuntimeError("Placement does not support instance arrays.")
             cell = self.layout.cell(instance.cell_index)
             component_id = self.component_id_for_instance(instance)
+            raw = instance.property("shapeforge.port_position")
+            position = json.loads(raw) if raw else None
+            from shapeforge.project_ports import is_project_port, validate_position
+            recipe = self.component_recipes.get(component_id)
+            if position is not None:
+                if not is_project_port(recipe):
+                    raise ValueError("Only project ports can have a port position definition.")
+                validate_position(position, self.parameters())
             add({"id": object_id, "type": "instance", "object": instance,
                  "instance": instance, "component": self.components.get(component_id),
-                 "name": cell.name, "label": f"Instance {cell.name} | {object_id}"})
+                 "port_position": position,
+                 "name": cell.name, "label": f"{'Project port' if is_project_port(recipe) else 'Instance'} {cell.name} | {object_id}"})
         for shape, definition in self.parametric_boxes():
             object_id = shape.property("shapeforge.object_id")
             if box_replacement is not None and object_id == box_replacement[0]:
