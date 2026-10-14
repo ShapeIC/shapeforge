@@ -1,5 +1,6 @@
 import json
 import math
+import inspect
 from dataclasses import MISSING
 from typing import get_type_hints
 import pya
@@ -11,6 +12,7 @@ from shapeforge.technology import available_technology_pcells, parameter_specs a
 _actions = []
 _session = None
 _parameter_panel = None
+_active_flow = None
 
 
 def load_external_libraries():
@@ -145,7 +147,7 @@ def ask_project_port_position(session, object_id, previous):
         else:
             if not any(identity != object_id for identity in objects):
                 raise ValueError("No other registered reference object is available.")
-            reference = choose_box_reference(session, objects, object_id, axis, "center", existing if isinstance(existing, dict) else None)
+            reference = yield from choose_box_reference(session, objects, object_id, axis, "center", existing if isinstance(existing, dict) else None)
             if reference is None:
                 return
             position[key] = reference
@@ -153,6 +155,10 @@ def ask_project_port_position(session, object_id, previous):
 
 
 def project_port_dialog(session, object_id=None):
+    return run_session_action(lambda current: _project_port_dialog(current, object_id), session=session)
+
+
+def _project_port_dialog(session, object_id=None):
     from shapeforge.project_ports import rows, create, edit
     specs = technology_specs("project_port", session.pdk)
     previous, position, angle = {}, {"version": 1}, 0
@@ -179,7 +185,7 @@ def project_port_dialog(session, object_id=None):
     if choice is None:
         return
     orientation = None if choice == keep else int(choice)
-    position = ask_project_port_position(session, object_id, position)
+    position = yield from ask_project_port_position(session, object_id, position)
     if position is None:
         return
     if object_id is None:
@@ -188,7 +194,7 @@ def project_port_dialog(session, object_id=None):
 
 
 def add_project_port():
-    run_session_action(lambda session: project_port_dialog(session))
+    run_session_action(lambda session: _project_port_dialog(session))
 
 
 def selected_project_port_id(session):
@@ -200,7 +206,7 @@ def selected_project_port_id(session):
 
 
 def edit_project_port():
-    run_session_action(lambda session: project_port_dialog(session, selected_project_port_id(session)))
+    run_session_action(lambda session: _project_port_dialog(session, selected_project_port_id(session)))
 
 
 def delete_project_port():
@@ -319,20 +325,13 @@ def regenerate_boxes():
 def route_ports():
     def execute(session):
         candidates = session.placement_candidates()
-        labels = [item["label"] for item in candidates]
-
-        choice = pya.InputDialog.ask_item(
-            "ShapeForge — Route Ports",
-            "Start instance:",
-            labels,
-            0,
-        )
-        if choice is None:
+        identity = yield from pick_reference(session, candidates, "Select the route's start instance.",
+                                             [item["id"] for item in candidates])
+        if identity is None:
             return
-
-        index_a = labels.index(choice)
-        a = candidates[index_a]
-        b = candidates[1 - index_a]
+        objects = session.placement_objects()
+        a = objects[identity]
+        b = objects[next(item["id"] for item in candidates if item["id"] != identity)]
 
         names_a = [port.name for port in a["component"].ports]
         names_b = [port.name for port in b["component"].ports]
@@ -364,6 +363,7 @@ def route_ports():
         if width is None:
             return
 
+        a, b = current_placement_pair(session, a, b, False)
         route_id = session.route_ports(
             a, port_a, b, port_b, width
         )
@@ -393,12 +393,13 @@ def choose_placement_pair(session, allow_boxes, target_only=False):
             raise RuntimeError("No other registered reference object is available.")
     else:
         candidates = session.placement_candidates(allow_boxes=allow_boxes)
-    labels = [item["label"] for item in candidates]
-    choice = pya.InputDialog.ask_item("ShapeForge — Placement", "Reference object A (stays fixed):", labels, 0)
-    if choice is None:
+    required = [target["id"]] if target_only else [item["id"] for item in candidates]
+    identity = yield from pick_reference(session, candidates, "Select reference A (stays fixed).", required)
+    if identity is None:
         return
-    reference = candidates[labels.index(choice)]
-    return reference, target if target_only else candidates[1 - labels.index(choice)]
+    objects = session.placement_objects()
+    target_id = target["id"] if target_only else next(item["id"] for item in candidates if item["id"] != identity)
+    return objects[identity], objects[target_id]
 
 
 def current_placement_pair(session, reference, target, target_only):
@@ -425,7 +426,7 @@ def panel_place_by_ports():
 
 def place_by_edges(target_only=False):
     def execute(session):
-        pair = choose_placement_pair(session, allow_boxes=True, target_only=target_only)
+        pair = yield from choose_placement_pair(session, allow_boxes=True, target_only=target_only)
         if pair is None:
             return
         a, b = pair
@@ -494,20 +495,13 @@ def place_by_edges(target_only=False):
 def place_right_of():
     def execute(session):
         candidates = session.placement_candidates(allow_boxes=True)
-        labels = [item["label"] for item in candidates]
-
-        choice = pya.InputDialog.ask_item(
-            "ShapeForge — Place Right Of",
-            "Reference A: B will be placed to its right.",
-            labels,
-            0,
-        )
-        if choice is None:
+        identity = yield from pick_reference(session, candidates, "Select reference A: B will be placed to its right.",
+                                             [item["id"] for item in candidates])
+        if identity is None:
             return
-
-        index_a = labels.index(choice)
-        a = candidates[index_a]
-        b = candidates[1 - index_a]
+        objects = session.placement_objects()
+        a = objects[identity]
+        b = objects[next(item["id"] for item in candidates if item["id"] != identity)]
 
         gap_text = pya.InputDialog.ask_string(
             "ShapeForge — Place Right Of",
@@ -529,6 +523,7 @@ def place_right_of():
 
         dy = session.parse_offset(dy_text)
 
+        a, b = current_placement_pair(session, a, b, False)
         actual_gap, actual_dy = session.place_right_of(a, b, gap, dy)
 
         pya.MessageBox.info(
@@ -595,8 +590,76 @@ def edit_placement():
 
 def remove_placement():
     run_session_action(lambda session: session.remove_placement())
-def run_session_action(callback):
-    if _session is None:
+def pick_reference(session, candidates, prompt, required_ids=()):
+    from shapeforge.reference_picker import ReferenceRequest
+    identity = yield ReferenceRequest(tuple(item["id"] for item in candidates), prompt, tuple(required_ids))
+    return identity
+
+
+class _DialogFlow:
+    """Advance ordinary dialogs until a graphical selection is requested."""
+
+    def __init__(self, session, dialogs):
+        self.session, self.dialogs = session, dialogs
+        self.picker = None
+        self.result = None
+        self.previous_actions = []
+
+    def advance(self, identity=None):
+        global _active_flow
+        try:
+            request = self.dialogs.send(identity)
+        except StopIteration as completed:
+            self.result = completed.value
+            self.finish()
+            return
+        except Exception as error:
+            self.finish()
+            pya.MessageBox.warning("ShapeForge", str(error), pya.MessageBox.Ok)
+            return
+        try:
+            from shapeforge.reference_picker import ReferencePicker
+            _active_flow = self
+            window = pya.Application.instance().main_window()
+            if not self.previous_actions:
+                self.previous_actions = [(action, action.enabled) for action in _actions]
+                for action, _ in self.previous_actions:
+                    action.enabled = False
+            if _parameter_panel is not None and not _parameter_panel.dock._destroyed():
+                _parameter_panel.set_reference_picking(True)
+            self.picker = ReferencePicker(self.session, request, self.selected, lambda: _session, window)
+            self.picker.start()
+        except Exception as error:
+            self.finish()
+            pya.MessageBox.warning("ShapeForge", str(error), pya.MessageBox.Ok)
+
+    def selected(self, identity):
+        self.picker = None
+        if identity is None or _session is not self.session:
+            self.finish()
+            return
+        self.advance(identity)
+
+    def finish(self):
+        global _active_flow
+        if self.picker is not None:
+            self.picker.finish(None, notify=False)
+            self.picker = None
+        self.dialogs.close()
+        if _active_flow is self:
+            _active_flow = None
+        for action, enabled in self.previous_actions:
+            if not action._destroyed():
+                action.enabled = enabled
+        if _parameter_panel is not None and not _parameter_panel.dock._destroyed():
+            _parameter_panel.set_reference_picking(False)
+
+
+def run_session_action(callback, session=None):
+    if _active_flow is not None:
+        return
+    session = _session if session is None else session
+    if session is None:
         pya.MessageBox.warning(
             "ShapeForge",
             "Create a PCell first.",
@@ -605,7 +668,12 @@ def run_session_action(callback):
         return
 
     try:
-        callback(_session)
+        result = callback(session)
+        if inspect.isgenerator(result):
+            flow = _DialogFlow(session, result)
+            flow.advance()
+            return flow.result
+        return result
     except Exception as error:
         pya.MessageBox.warning(
             "ShapeForge",
@@ -704,16 +772,8 @@ def regenerate_placement():
             pya.MessageBox.Ok,
         )
 def place_by_ports(target_only=False):
-    if _session is None:
-        pya.MessageBox.warning(
-            "ShapeForge",
-            "Create a PCell first.",
-            pya.MessageBox.Ok,
-        )
-        return
-
-    try:
-        pair = choose_placement_pair(_session, allow_boxes=False, target_only=target_only)
+    def execute(session):
+        pair = yield from choose_placement_pair(session, allow_boxes=False, target_only=target_only)
         if pair is None:
             return
         a, b = pair
@@ -747,7 +807,7 @@ def place_by_ports(target_only=False):
         if dx_text is None:
             return
 
-        dx = _session.parse_offset(dx_text)
+        dx = session.parse_offset(dx_text)
 
         dy_text = pya.InputDialog.ask_string(
             "ShapeForge — Place by Ports",
@@ -757,10 +817,10 @@ def place_by_ports(target_only=False):
         if dy_text is None:
             return
 
-        dy = _session.parse_offset(dy_text)
+        dy = session.parse_offset(dy_text)
 
-        a, b = current_placement_pair(_session, a, b, target_only)
-        actual_dx, actual_dy = _session.place_by_ports(
+        a, b = current_placement_pair(session, a, b, target_only)
+        actual_dx, actual_dy = session.place_by_ports(
             a, port_a, b, port_b, dx, dy
         )
 
@@ -772,12 +832,7 @@ def place_by_ports(target_only=False):
             pya.MessageBox.Ok,
         )
 
-    except Exception as error:
-        pya.MessageBox.warning(
-            "ShapeForge",
-            str(error),
-            pya.MessageBox.Ok,
-        )
+    run_session_action(execute)
 
 def normalize_instance_ids():
     if _session is None:
@@ -1055,18 +1110,13 @@ def keep_selected_box_id():
 def choose_box_reference(session, objects, box_id, axis, end, existing=None):
     title = "ShapeForge — Box Center" if end == "center" else "ShapeForge — Box Extents"
     references = [item for key, item in sorted(objects.items()) if key != box_id]
-    labels = [item["label"] for item in references]
     if not references:
         raise RuntimeError("Insert another managed object to use as a reference.")
-    reference_ids = [item["id"] for item in references]
-    default = (reference_ids.index(existing["reference_id"])
-               if existing and existing.get("reference_id") in reference_ids else 0)
-    choice = pya.InputDialog.ask_item(
-        title, f"{axis.upper()} {end}: reference object:",
-        labels, default)
-    if choice is None:
+    identity = yield from pick_reference(session, references, f"{axis.upper()} {end}: select the reference object.",
+                                         [box_id] if box_id is not None else [])
+    if identity is None:
         return None
-    item = references[labels.index(choice)]
+    item = session.placement_objects()[identity]
     anchors = (["left", "center", "right"] if axis == "x"
                else ["bottom", "center", "top"])
     options = list(anchors)
@@ -1107,8 +1157,8 @@ def choose_box_center(session, objects, box_id, axis, existing=None):
     if mode is None:
         return None
     if mode == "Reference":
-        return choose_box_reference(session, objects, box_id, axis, "center",
-                                    existing if isinstance(existing, dict) else None)
+        return (yield from choose_box_reference(session, objects, box_id, axis, "center",
+                                    existing if isinstance(existing, dict) else None))
     text = pya.InputDialog.ask_string(
         "ShapeForge — Box Center", f"{axis.upper()} center (µm), number or parameter:",
         str(existing if existing is not None and not isinstance(existing, dict) else 0))
@@ -1139,7 +1189,7 @@ def define_box_center():
                     return
                 definition[dimension] = session.parse_offset(text)
                 definition.pop(f"{axis}_extents")
-            center = choose_box_center(session, objects, box_id, axis, definition.get(key))
+            center = yield from choose_box_center(session, objects, box_id, axis, definition.get(key))
             if center is None:
                 return
             definition[key] = center
@@ -1169,7 +1219,7 @@ def define_box_extents():
                 definition[dimension] = session.parse_offset(text)
                 definition.pop(key, None)
                 if mode == "Dimension + center":
-                    center = choose_box_center(session, objects, box_id, axis,
+                    center = yield from choose_box_center(session, objects, box_id, axis,
                                                definition.get(f"{axis}_center"))
                     if center is None:
                         return
@@ -1177,10 +1227,10 @@ def define_box_extents():
                 else:
                     definition.pop(f"{axis}_center", None)
             else:
-                lower = choose_box_reference(session, objects, box_id, axis, "min", existing.get("min") if existing else None)
+                lower = yield from choose_box_reference(session, objects, box_id, axis, "min", existing.get("min") if existing else None)
                 if lower is None:
                     return
-                upper = choose_box_reference(session, objects, box_id, axis, "max", existing.get("max") if existing else None)
+                upper = yield from choose_box_reference(session, objects, box_id, axis, "max", existing.get("max") if existing else None)
                 if upper is None:
                     return
                 definition[key] = {"min": lower, "max": upper}

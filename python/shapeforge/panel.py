@@ -28,6 +28,7 @@ class ShapeForgePanel:
             from shapeforge import ui
             callbacks = {name: getattr(ui, name) for name in ACTION_TITLES}
         self.callbacks = callbacks
+        self.reference_picking = False
         self.signature, self.selection_key, self.context = None, None, None
         self.dock = pya.QDockWidget("ShapeForge", main_window)
         self.dock.objectName = "shapeforge_parameters"  # Keep the saved dock position.
@@ -62,7 +63,7 @@ class ShapeForgePanel:
         self.refresh()
 
     def refresh(self, *args):
-        if self.dock._destroyed():
+        if self.dock._destroyed() or self.reference_picking:
             return
         self.parameters.refresh()
         self.ports.refresh()
@@ -90,6 +91,8 @@ class ShapeForgePanel:
             button.toolTip = reason or ACTION_TITLES[name]
 
     def execute(self, action):
+        if self.reference_picking:
+            return
         self.refresh()  # Resolve the current selection, not a stale native object.
         if action not in self.context["actions"] or self.context["actions"][action] is not None:
             return
@@ -97,6 +100,17 @@ class ShapeForgePanel:
             self.callbacks[action]()
         finally:
             self.refresh()
+
+    def set_reference_picking(self, picking):
+        if picking and not self.reference_picking:
+            self._picking_tab = self.tabs.currentIndex
+        self.reference_picking = picking
+        self.tabs.enabled = not picking
+        if not picking:
+            self.refresh()
+            if hasattr(self, "_picking_tab"):
+                self.tabs.currentIndex = self._picking_tab
+                del self._picking_tab
 
     def show(self):
         self.refresh()
