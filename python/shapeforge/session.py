@@ -88,7 +88,11 @@ class Session:
         self.validate()
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
-        generated = generate_technology(generator, arguments, self.pdk, self.parameters())
+        if generator == "via_stack":
+            concrete = self.resolve_via_inputs(arguments)
+        else:
+            concrete = arguments
+        generated = generate_technology(generator, concrete, self.pdk, self.parameters())
         return self.insert_generated(generated, {**generated.recipe["arguments"], **arguments})
 
     def insert_generated(self, generated, geometry):
@@ -208,7 +212,14 @@ class Session:
         old_cell = self.layout.cell(instance.cell_index)
         if _geometry_signature(old_cell, self.layout.dbu) != _geometry_signature(old_source.kdb_cell, self.layout.dbu):
             raise RuntimeError("This component was edited manually. Its recipe cannot preserve those edits.")
-        generated = generate_inputs(recipe, geometry, self.parameters())
+        from shapeforge.technology import is_via_stack
+        if is_via_stack(recipe):
+            identity = instance.property("shapeforge.instance_id")
+            planned = self.primitive_update_plan(input_replacements={identity: geometry})
+            generated = planned.get(identity) or generate_inputs(
+                recipe, self.resolve_via_inputs(geometry, instance.dcplx_trans.mag, planned), self.parameters())
+        else:
+            generated = generate_inputs(recipe, geometry, self.parameters())
         new_definition = input_definition(geometry, recipe["provider"])
         raw = instance.property("shapeforge.geometry_parameters")
         old_definition = None if raw is None else json.loads(raw)
@@ -249,29 +260,49 @@ class Session:
         else:
             instance.set_property("shapeforge.geometry_parameters", json.dumps(definition, allow_nan=False))
 
-    def primitive_update_plan(self):
-        objects = self.placement_objects()  # Validate identities before generating.
+    def primitive_update_plan(self, input_replacements=None):
+        objects = self.placement_objects(resolve_dimensions=False)
         updates = {}
         from shapeforge.project import _geometry_signature
+        from shapeforge.dimensions import width_references
+        visiting, done = set(), set()
+        def visit(object_id):
+            if object_id in done:
+                return
+            if object_id in visiting:
+                raise ValueError(f"Dimension generation cycle detected at {object_id}.")
+            if object_id not in objects or objects[object_id]["type"] != "instance":
+                raise ValueError(f"Port width reference requires a linked instance: {object_id}.")
+            visiting.add(object_id)
+            item = objects[object_id]
+            instance = item["instance"]
+            raw = instance.property("shapeforge.geometry_parameters")
+            replacement = (input_replacements or {}).get(object_id)
+            definition = json.loads(raw) if raw is not None else None
+            component_id = self.component_id_for_instance(instance)
+            recipe = self.component_recipes.get(component_id)
+            if replacement is not None:
+                definition = input_definition(replacement, recipe["provider"]) or {"version": 2, "values": replacement}
+            if definition is not None:
+                if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology"):
+                    raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")
+                validate_input_definition(definition, recipe, self.parameters())
+                for ref in width_references(definition["values"]):
+                    visit(ref["reference_id"])
+                values = definition["values"]
+                if definition["version"] == 3:
+                    values = self.resolve_via_inputs(values, instance.dcplx_trans.mag, updates)
+                generated = generate_inputs(recipe, values, self.parameters())
+                if generated.recipe != recipe or generated.component is not self.components[component_id]:
+                    if _geometry_signature(self.layout.cell(instance.cell_index), self.layout.dbu) != _geometry_signature(self.components[component_id].kdb_cell, self.layout.dbu):
+                        raise ValueError(f"Instance {object_id} was edited manually; its recipe cannot preserve those edits.")
+                    updates[object_id] = generated
+            visiting.remove(object_id)
+            done.add(object_id)
         for object_id, item in objects.items():
             if item["type"] != "instance":
                 continue
-            instance = item["instance"]
-            raw = instance.property("shapeforge.geometry_parameters")
-            if raw is None:
-                continue
-            definition = json.loads(raw)
-            component_id = self.component_id_for_instance(instance)
-            recipe = self.component_recipes.get(component_id)
-            if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology"):
-                raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")
-            validate_input_definition(definition, recipe, self.parameters())
-            generated = generate_inputs(recipe, definition["values"], self.parameters())
-            if generated.recipe == recipe and generated.component is self.components[component_id]:
-                continue
-            if _geometry_signature(self.layout.cell(instance.cell_index), self.layout.dbu) != _geometry_signature(self.components[component_id].kdb_cell, self.layout.dbu):
-                raise ValueError(f"Instance {object_id} was edited manually; its recipe cannot preserve those edits.")
-            updates[object_id] = generated
+            visit(object_id)
         return updates
 
     def regeneration_plan(self, via_center_replacement=None):
@@ -1007,6 +1038,37 @@ class Session:
         """Resolve a numeric value or safe arithmetic expression, in µm."""
         return resolve_value(value, self.parameters())
 
+    def resolve_dimension(self, value, component_replacements=None, magnification=1):
+        from shapeforge.dimensions import validate_port_width, positive_width
+        if not isinstance(value, dict):
+            return self.resolve_offset(value)
+        validate_port_width(value)
+        matches = [i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == value["reference_id"]]
+        if len(matches) != 1:
+            raise ValueError(f"Missing or duplicate port width reference: {value['reference_id']}.")
+        instance = matches[0]
+        if instance.size() != 1 or instance.is_regular_array():
+            raise ValueError("Port width references do not support instance arrays.")
+        generated = (component_replacements or {}).get(value["reference_id"])
+        component = generated.component if generated is not None else self.components.get(self.component_id_for_instance(instance))
+        if component is None:
+            raise ValueError("Port width reference requires a linked component.")
+        ports = {port.name: port for port in component.ports}
+        if value["port"] not in ports:
+            raise ValueError(f"Port width reference {value['reference_id']} has no port '{value['port']}'.")
+        return positive_width(float(ports[value["port"]].width) * abs(instance.dcplx_trans.mag)
+                              / positive_width(abs(magnification)))
+
+    def resolve_via_inputs(self, values, magnification=1, component_replacements=None):
+        from shapeforge.dimensions import is_port_width
+        result = dict(values)
+        for name, value in result.items():
+            if is_port_width(value):
+                if name not in ("width", "height"):
+                    raise ValueError("Port width bindings require a via width or height.")
+                result[name] = self.resolve_dimension(value, component_replacements, magnification)
+        return result
+
     def resolved_parameters(self):
         return resolve_parameters(self.parameters())
 
@@ -1046,7 +1108,8 @@ class Session:
             if raw is not None:
                 definition = json.loads(raw)
                 for axis, dimension in (("x", "width_um"), ("y", "height_um")):
-                    if not definition.get(f"{axis}_extents") and name in references(definition[dimension]):
+                    if (not definition.get(f"{axis}_extents") and not isinstance(definition[dimension], dict)
+                            and name in references(definition[dimension])):
                         usages.append(f"{identity}: {dimension}")
                     center = definition.get(f"{axis}_center")
                     if center is not None and not isinstance(center, dict) and name in references(center):
@@ -1205,7 +1268,7 @@ class Session:
     def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None,
                        via_center_replacement=None):
         """Plan dimensions, referenced extents and placement without mutation."""
-        objects = self.placement_objects(box_replacement=box_replacement)
+        objects = self.placement_objects(box_replacement=box_replacement, component_replacements=component_replacements)
         if via_center_replacement is not None:
             identity, position = via_center_replacement
             if identity not in objects:
@@ -1701,7 +1764,7 @@ class Session:
                 seen.add(box_id)
                 definition = json.loads(raw)
 
-                if definition.get("version") not in (1, 2):
+                if definition.get("version") not in (1, 2, 3):
                     raise RuntimeError("Unsupported box definition version.")
 
                 result.append((shape, definition))
@@ -1709,8 +1772,8 @@ class Session:
         return result
 
     def sized_box(self, shape, width, height):
-        width_um = self.resolve_offset(width)
-        height_um = self.resolve_offset(height)
+        width_um = self.resolve_dimension(width)
+        height_um = self.resolve_dimension(height)
 
         if width_um <= 0 or height_um <= 0:
             raise ValueError("Box width and height must be positive.")
@@ -1751,6 +1814,8 @@ class Session:
             "width_um": width,
             "height_um": height,
         }
+        from shapeforge.dimensions import box_version
+        definition["version"] = box_version(definition)
         serialized = json.dumps(definition, allow_nan=False)
 
         box_id = shape.property("shapeforge.object_id")
@@ -1795,7 +1860,7 @@ class Session:
         # never use stale box dimensions.
         return self.regenerate_placement()
 
-    def placement_objects(self, box_replacement=None):
+    def placement_objects(self, box_replacement=None, resolve_dimensions=True, component_replacements=None):
         """Collect instances and parametric boxes in the working cell."""
         self.validate()
         result = {}
@@ -1843,6 +1908,13 @@ class Session:
                      else definition["width_um"])
             height = (self.dbu_to_um(current.height()) if definition.get("y_extents")
                       else definition["height_um"])
+            from shapeforge.dimensions import is_port_width
+            if resolve_dimensions:
+                width = self.resolve_dimension(width, component_replacements)
+                height = self.resolve_dimension(height, component_replacements)
+            else:
+                width = self.dbu_to_um(current.width()) if is_port_width(width) else width
+                height = self.dbu_to_um(current.height()) if is_port_width(height) else height
             box = self.sized_box(shape, width, height)
             # Geometry is local to the box's lower-left corner. Translation
             # represents that corner in working-cell coordinates.
@@ -1936,7 +2008,7 @@ class Session:
         return refs
 
     def validate_box_definition(self, definition):
-        if definition.get("version") not in (1, 2):
+        if definition.get("version") not in (1, 2, 3):
             raise RuntimeError("Unsupported box definition version.")
         for axis, dimension, allowed in (
             ("x", "width_um", ("left", "center", "right", "port")),
@@ -1944,7 +2016,7 @@ class Session:
         ):
             extents = definition.get(f"{axis}_extents")
             if f"{axis}_center" in definition:
-                if definition["version"] != 2:
+                if definition["version"] not in (2, 3):
                     raise ValueError("Parametric box centers require box definition version 2.")
                 if extents is not None:
                     raise ValueError(f"{axis.upper()} center and two referenced extents cannot coexist.")
@@ -1956,7 +2028,12 @@ class Session:
             if extents is None:
                 if dimension not in definition:
                     raise ValueError(f"Missing {dimension}.")
-                if self.resolve_offset(definition[dimension]) <= 0:
+                if isinstance(definition[dimension], dict):
+                    from shapeforge.dimensions import validate_port_width
+                    if definition["version"] != 3:
+                        raise ValueError("Port width dimensions require box definition version 3.")
+                    validate_port_width(definition[dimension])
+                elif self.resolve_offset(definition[dimension]) <= 0:
                     raise ValueError("Box dimensions must be positive.")
                 continue
             for end in ("min", "max"):
@@ -2047,20 +2124,22 @@ class Session:
 
     def define_box_extents(self, definition):
         definition = dict(definition)
-        definition["version"] = 2 if any(f"{axis}_center" in definition for axis in ("x", "y")) else 1
+        from shapeforge.dimensions import box_version
+        definition["version"] = box_version(definition)
         self.validate()
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
         shape, object_id, _, _ = self.selected_box_definition()
         self.validate_box_definition(definition)
         serialized = json.dumps(definition, allow_nan=False)
-        updates, _ = self.placement_plan(box_replacement=(object_id, definition))
+        components = self.primitive_update_plan()
+        updates, _ = self.placement_plan(box_replacement=(object_id, definition), component_replacements=components)
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
         view.transaction("ShapeForge: define box extents")
         try:
-            self.apply_placement_updates(updates)
+            self.apply_regeneration_plan(components, updates)
             shape.set_property("shapeforge.box", serialized)
         finally:
             view.commit()
@@ -2081,7 +2160,13 @@ class Session:
                     lines.append(f"{axis.upper()} {end}: {label}, {anchor}, "
                                  f"offset={ref.get('offset_um', 0)} µm")
             else:
-                lines.append(f"{dimension}: {definition[dimension]} µm")
+                value = definition[dimension]
+                from shapeforge.dimensions import is_port_width
+                if is_port_width(value):
+                    lines.append(f"{dimension}: width of port {value['port']} on {value['reference_id']}; "
+                                 f"current={self.resolve_dimension(value):g} µm")
+                else:
+                    lines.append(f"{dimension}: {value} µm")
             center = definition.get(f"{axis}_center")
             if isinstance(center, dict):
                 item = objects.get(center["reference_id"])

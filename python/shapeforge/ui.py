@@ -8,6 +8,7 @@ from shapeforge.session import Session
 from shapeforge.components import available_primitives, cellkit_catalog, geometry_fields
 from shapeforge.project import prepare_project, save_project as write_project
 from shapeforge.technology import available_technology_pcells, parameter_specs as technology_specs
+from shapeforge.dimension_dialog import dimension_dialog, PORT_REFERENCE
 
 _actions = []
 _session = None
@@ -41,6 +42,51 @@ def ask_external_arguments(recipe, previous, session):
     from shapeforge.external import generator_specs
     specs = generator_specs(recipe)  # Validate every annotation before prompting.
     return ask_component_arguments(recipe["function"], specs, previous, session)
+
+
+def ask_dimension(session, title, label, previous, target_id=None, magnification=1):
+    value = dimension_dialog(session, title, label, previous, magnification)
+    if value is not PORT_REFERENCE:
+        return value
+    objects = session.placement_objects()
+    candidates = [item for identity, item in objects.items() if identity != target_id
+                  and item["type"] == "instance" and item["component"] is not None and len(item["component"].ports)]
+    if not candidates:
+        raise ValueError("No other linked instance with ports is available.")
+    identity = yield from pick_reference(session, candidates, "Select the owner of the dimension's reference port.",
+                                         [target_id] if target_id is not None else [])
+    if identity is None:
+        return
+    item = session.placement_objects()[identity]
+    ports = session.transformed_ports(item["instance"], item["component"])
+    labels = [f"{port['name']} — width {port['width']:g} µm" for port in ports]
+    choice = pya.InputDialog.ask_item(title, "Reference port (width in layout):", labels, 0)
+    if choice is None:
+        return
+    value = {"kind": "port_width", "reference_id": identity, "port": ports[labels.index(choice)]["name"]}
+    session.resolve_dimension(value, magnification=magnification)
+    return value
+
+
+def ask_via_arguments(session, specs, previous, target_id=None, magnification=1):
+    values = {}
+    for name, spec in specs.items():
+        if name in ("width", "height"):
+            value = yield from ask_dimension(session, "ShapeForge — via_stack", name,
+                                             previous.get(name, spec["default"]), target_id, magnification)
+            if value is None:
+                return
+            if isinstance(value, str):
+                value = {"expression": value}
+            values[name] = value
+        else:
+            answer = ask_component_arguments("via_stack", {name: spec}, previous, session)
+            if answer is None:
+                return
+            values.update(answer)
+    from shapeforge.technology import resolve_inputs
+    resolve_inputs("via_stack", session.resolve_via_inputs(values, magnification), session.parameters(), session.pdk)
+    return values
 
 
 def ask_component_arguments(generator, specs, previous, session):
@@ -298,25 +344,15 @@ def make_box_parametric():
         else:
             definition = json.loads(raw)
 
-        width_text = pya.InputDialog.ask_string(
-            "ShapeForge — Parametric Box",
-            "Width (µm): number or parameter name:",
-            str(definition["width_um"]),
-        )
-        if width_text is None:
+        identity = shape.property("shapeforge.object_id")
+        width = yield from ask_dimension(session, "ShapeForge — Parametric Box", "Width", definition["width_um"], identity)
+        if width is None:
             return
-
-        width = session.parse_offset(width_text)
-
-        height_text = pya.InputDialog.ask_string(
-            "ShapeForge — Parametric Box",
-            "Height (µm): number or parameter name:",
-            str(definition["height_um"]),
-        )
-        if height_text is None:
+        height = yield from ask_dimension(session, "ShapeForge — Parametric Box", "Height", definition["height_um"], identity)
+        if height is None:
             return
-
-        height = session.parse_offset(height_text)
+        if session.selected_box() != shape:
+            raise ValueError("The selected box changed. Retry the action.")
 
         actual_width, actual_height = session.make_box_parametric(
             width, height
@@ -1045,7 +1081,10 @@ def insert_primitive():
             previous = next((recipe["arguments"] for recipe in reversed(list(session.component_recipes.values()))
                              if recipe.get("provider") == "shapeic-cellkit-technology"
                              and recipe.get("generator") == generator and recipe.get("pdk") == session.pdk), {})
-            values = ask_component_arguments(generator, technology_specs(generator, session.pdk), previous, session)
+            if generator == "via_stack":
+                values = yield from ask_via_arguments(session, technology_specs(generator, session.pdk), previous)
+            else:
+                values = ask_component_arguments(generator, technology_specs(generator, session.pdk), previous, session)
             if values is not None:
                 session.insert_technology_pcell(generator, values)
             return
@@ -1085,7 +1124,11 @@ def edit_primitive_parameters():
         if recipe["provider"] == "external-python":
             values = ask_external_arguments(recipe, previous, session)
         elif recipe["provider"] == "shapeic-cellkit-technology":
-            values = ask_component_arguments(recipe["generator"], technology_specs(recipe["generator"], recipe["pdk"]), previous, session)
+            if recipe["generator"] == "via_stack":
+                values = yield from ask_via_arguments(session, technology_specs("via_stack", recipe["pdk"]), previous,
+                                                     instance.property("shapeforge.instance_id"), instance.dcplx_trans.mag)
+            else:
+                values = ask_component_arguments(recipe["generator"], technology_specs(recipe["generator"], recipe["pdk"]), previous, session)
         else:
             descriptor = cellkit_catalog(recipe["pdk"]).primitive(recipe["primitive"])
             values = ask_primitive_geometry(recipe["primitive"], previous, descriptor.geometry_limits, session)
@@ -1202,13 +1245,13 @@ def define_box_center():
             if definition.get(f"{axis}_extents") is not None:
                 box = shape.box
                 size = box.width() if axis == "x" else box.height()
-                text = pya.InputDialog.ask_string(
-                    "ShapeForge — Box Center",
-                    f"{axis.upper()} center replaces this axis's two extents. {dimension} (µm), number or parameter:",
-                    str(session.dbu_to_um(size)))
-                if text is None:
+                value = yield from ask_dimension(
+                    session, "ShapeForge — Box Center",
+                    f"{axis.upper()} center replaces this axis's two extents. {dimension}",
+                    session.dbu_to_um(size), box_id)
+                if value is None:
                     return
-                definition[dimension] = session.parse_offset(text)
+                definition[dimension] = value
                 definition.pop(f"{axis}_extents")
             center = yield from choose_box_center(session, objects, box_id, axis, definition.get(key))
             if center is None:
@@ -1232,12 +1275,11 @@ def define_box_extents():
             if mode is None:
                 return
             if mode in ("Dimension", "Dimension + center"):
-                text = pya.InputDialog.ask_string(
-                    "ShapeForge — Box Extents", f"{dimension} (µm), number or parameter:",
-                    str(definition.get(dimension, 1)))
-                if text is None:
+                value = yield from ask_dimension(session, "ShapeForge — Box Extents", dimension,
+                                                  definition.get(dimension, 1), box_id)
+                if value is None:
                     return
-                definition[dimension] = session.parse_offset(text)
+                definition[dimension] = value
                 definition.pop(key, None)
                 if mode == "Dimension + center":
                     center = yield from choose_box_center(session, objects, box_id, axis,
@@ -1255,6 +1297,9 @@ def define_box_extents():
                 if upper is None:
                     return
                 definition[key] = {"min": lower, "max": upper}
+                from shapeforge.dimensions import is_port_width
+                if is_port_width(definition.get(dimension)):
+                    definition.pop(dimension)
                 definition.pop(f"{axis}_center", None)
         session.define_box_extents(definition)
         pya.MessageBox.info("ShapeForge — Box", "Box extents saved and regenerated.", pya.MessageBox.Ok)

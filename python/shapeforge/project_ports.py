@@ -142,7 +142,7 @@ def _rewrite_references(session, object_id, old_name, new_name):
     for layer in session.layout.layer_indexes():
         objects += [(s, s.property("shapeforge.object_id")) for s in session.cell.shapes(layer).each()]
     for obj, identity in objects:
-        for key in ("shapeforge.placement", "shapeforge.box", POSITION_PROPERTY, "shapeforge.via_center"):
+        for key in ("shapeforge.placement", "shapeforge.box", POSITION_PROPERTY, "shapeforge.via_center", "shapeforge.geometry_parameters"):
             raw = obj.property(key)
             if raw is None:
                 continue
@@ -249,6 +249,13 @@ def usages(session, object_id):
         definition = item.get("definition") if item["type"] == "box" else (item.get("via_center") or item.get("port_position"))
         if definition and any(ref["reference_id"] == object_id for ref in session.box_position_references(definition)):
             result.append(f"{identity}: extents or center")
+        from shapeforge.dimensions import width_references
+        values = definition or {}
+        if item["type"] == "instance":
+            raw = item["object"].property("shapeforge.geometry_parameters")
+            values = json.loads(raw)["values"] if raw else {}
+        if any(ref["reference_id"] == object_id for ref in width_references(values)):
+            result.append(f"{identity}: port width dimension")
     return result
 
 

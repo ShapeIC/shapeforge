@@ -198,6 +198,9 @@ def generate_inputs(recipe, values, parameters):
 
 
 def input_definition(values, provider):
+    from shapeforge.dimensions import width_references
+    if width_references(values):
+        return {"version": 3, "values": dict(values)}
     if provider in ("external-python", "shapeic-cellkit-technology"):
         return {"version": 2, "values": dict(values)} if any(isinstance(v, dict) for v in values.values()) else None
     return {"version": 1, "values": dict(values)} if any(isinstance(v, str) for v in values.values()) else None
@@ -206,6 +209,19 @@ def input_definition(values, provider):
 def validate_input_definition(definition, recipe, parameters):
     if not isinstance(definition, dict) or set(definition) != {"version", "values"}:
         raise ValueError("Invalid primitive input definition.")
+    if type(definition["version"]) is int and definition["version"] == 3:
+        from shapeforge.dimensions import validate_port_width, is_port_width
+        from shapeforge.technology import is_via_stack, resolve_inputs
+        if not is_via_stack(recipe) or not isinstance(definition["values"], dict):
+            raise ValueError("Port width input bindings are supported only for via_stack.")
+        values = dict(definition["values"])
+        for name, value in values.items():
+            if is_port_width(value):
+                if name not in ("width", "height"):
+                    raise ValueError("Port width bindings require a via width or height.")
+                validate_port_width(value)
+                values[name] = 1.0  # Validate remaining fields without invoking a provider.
+        return resolve_inputs(recipe["generator"], values, parameters, recipe["pdk"])
     if recipe["provider"] == "shapeic-cellkit-technology" and type(definition["version"]) is int and definition["version"] == 2:
         from shapeforge.technology import resolve_inputs
         return resolve_inputs(recipe["generator"], definition["values"], parameters, recipe["pdk"])
@@ -219,8 +235,8 @@ def validate_input_definition(definition, recipe, parameters):
 
 def input_expressions(definition):
     for name, value in definition["values"].items():
-        if definition["version"] == 2:
-            if isinstance(value, dict):
+        if definition["version"] in (2, 3):
+            if isinstance(value, dict) and "expression" in value:
                 yield name, value["expression"]
         else:
             yield name, value

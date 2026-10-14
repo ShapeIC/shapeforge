@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 7
+VERSION = 8
 
 
 class ProjectError(ValueError):
@@ -137,8 +137,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in (1, 2, 3, 4, 5, 6, 7):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 7.")
+    if type(document.get("version")) is not int or document["version"] not in range(1, 9):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 8.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -206,6 +206,8 @@ def validate_document(document):
                 geometry_parameters = entry.get("geometry_parameters")
                 if geometry_parameters is not None:
                     _object(geometry_parameters, ("version", "values"), "geometry_parameters")
+                    if geometry_parameters["version"] == 3 and document["version"] < 8:
+                        raise ProjectError("Port width input bindings require project version 8.")
                     try:
                         validate_input_definition(geometry_parameters, components[entry["component_id"]], parameters)
                     except Exception as error:
@@ -254,6 +256,37 @@ def validate_document(document):
              if is_project_port(components[entry["component_id"]])]
     if len(names) != len(set(names)):
         raise ProjectError("Duplicate project port names. Rename copied ports explicitly.")
+    from shapeforge.dimensions import validate_port_width, width_references
+    def check_width_reference(reference):
+        if document["version"] < 8:
+            raise ProjectError("Port width dimensions require project version 8.")
+        try:
+            validate_port_width(reference)
+        except ValueError as error:
+            raise ProjectError(str(error)) from error
+        if reference["reference_id"] not in objects or objects[reference["reference_id"]][0] != "instance":
+            raise ProjectError(f"Port width reference requires a linked instance: {reference['reference_id']}.")
+
+    dimension_dependencies = {key: set() for key, (kind, _) in objects.items() if kind == "instance"}
+    for identity, (kind, entry) in objects.items():
+        if kind == "instance" and entry.get("geometry_parameters"):
+            for reference in width_references(entry["geometry_parameters"]["values"]):
+                check_width_reference(reference)
+                dimension_dependencies[identity].add(reference["reference_id"])
+    dimension_visiting, dimension_done = set(), set()
+    def visit_dimension(identity):
+        if identity in dimension_visiting:
+            raise ProjectError(f"Dimension generation cycle detected at {identity}.")
+        if identity in dimension_done:
+            return
+        dimension_visiting.add(identity)
+        for source in sorted(dimension_dependencies[identity]):
+            visit_dimension(source)
+        dimension_visiting.remove(identity)
+        dimension_done.add(identity)
+    for identity in dimension_dependencies:
+        visit_dimension(identity)
+
     dependencies = {key: set() for key in objects}
     for object_id, (kind, entry) in objects.items():
         relation = entry["placement"]
@@ -311,8 +344,10 @@ def validate_document(document):
             definition = entry["definition"]
             if not isinstance(definition, dict):
                 raise ProjectError("Box definition must be an object.")
-            if type(definition.get("version")) is not int or definition["version"] not in (1, 2):
-                raise ProjectError("Unsupported box definition version; supported versions are 1 and 2.")
+            if type(definition.get("version")) is not int or definition["version"] not in (1, 2, 3):
+                raise ProjectError("Unsupported box definition version; supported versions are 1, 2 and 3.")
+            if definition["version"] == 3 and document["version"] < 8:
+                raise ProjectError("Box definition version 3 requires project version 8.")
             if set(definition) - {"version", "width_um", "height_um", "x_extents", "y_extents", "x_center", "y_center"}:
                 raise ProjectError("Unknown box definition fields.")
             for axis, dimension, anchors in (
@@ -322,7 +357,7 @@ def validate_document(document):
                 extents = definition.get(f"{axis}_extents")
                 references = []
                 if f"{axis}_center" in definition:
-                    if definition["version"] != 2:
+                    if definition["version"] not in (2, 3):
                         raise ProjectError("Parametric box centers require box definition version 2.")
                     if extents is not None:
                         raise ProjectError(f"{axis.upper()} center and two referenced extents cannot coexist.")
@@ -336,7 +371,12 @@ def validate_document(document):
                 if extents is None:
                     if dimension not in definition:
                         raise ProjectError(f"Missing box {dimension}.")
-                    _offset(definition[dimension], parameters, dimension, document["version"])
+                    if isinstance(definition[dimension], dict):
+                        if definition["version"] != 3:
+                            raise ProjectError("Port width dimensions require box definition version 3.")
+                        check_width_reference(definition[dimension])
+                    else:
+                        _offset(definition[dimension], parameters, dimension, document["version"])
                 else:
                     # Only the active axis definition is evaluated.
                     if relation is not None:
