@@ -199,6 +199,8 @@ class Session:
     def edit_primitive_parameters(self, geometry):
         """Replace only the selected instance's component; keep its identity and transform."""
         instance, recipe = self.selected_primitive_instance()
+        if instance.property("shapeforge.array_member") is not None:
+            raise ValueError("Array repetitions inherit geometry. Edit the base instance or dissolve the array.")
         from shapeforge.project_ports import is_project_port, edit, POSITION_PROPERTY
         if is_project_port(recipe):
             raw = instance.property(POSITION_PROPERTY)
@@ -262,6 +264,8 @@ class Session:
 
     def primitive_update_plan(self, input_replacements=None):
         objects = self.placement_objects(resolve_dimensions=False)
+        from shapeforge.arrays import collect
+        collect(objects, self.parameters(), validate_values=False)
         updates = {}
         from shapeforge.project import _geometry_signature
         from shapeforge.dimensions import width_references
@@ -276,6 +280,20 @@ class Session:
             visiting.add(object_id)
             item = objects[object_id]
             instance = item["instance"]
+            member = item.get("array_member")
+            if member is not None:
+                owner = member["owner_id"]
+                visit(owner)
+                from shapeforge.components import GeneratedComponent
+                source = objects[owner]["instance"]
+                component_id = self.component_id_for_instance(source)
+                generated = updates.get(owner) or GeneratedComponent(self.components[component_id], self.component_recipes[component_id])
+                current_id = self.component_id_for_instance(instance)
+                if generated.component is not self.components.get(current_id) or generated.recipe != self.component_recipes.get(current_id):
+                    updates[object_id] = generated
+                visiting.remove(object_id)
+                done.add(object_id)
+                return
             raw = instance.property("shapeforge.geometry_parameters")
             replacement = (input_replacements or {}).get(object_id)
             definition = json.loads(raw) if raw is not None else None
@@ -318,6 +336,8 @@ class Session:
         from shapeforge.technology import is_via_stack
         from shapeforge.project_ports import validate_position
         instance, recipe = self.selected_primitive_instance()
+        if instance.property("shapeforge.array_member") is not None:
+            raise ValueError("Array repetitions inherit position. Define the base center or dissolve the array.")
         if not is_via_stack(recipe):
             raise ValueError("Select a registered via_stack instance.")
         if not self.layout.is_editable():
@@ -346,6 +366,9 @@ class Session:
 
     def apply_regeneration_plan(self, components, updates):
         for object_id, generated in components.items():
+            current = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == object_id)
+            if current.property("shapeforge.array_member") is not None:
+                continue  # Reuse the updated base cell when applying repetitions.
             component_id = str(uuid4())
             target = self.layout.create_cell(f"SF_{generated.recipe.get('primitive', generated.recipe.get('function', generated.recipe.get('generator', 'component')))}_{component_id[:8]}")
             target.copy_tree(generated.component.kdb_cell)
@@ -668,6 +691,8 @@ class Session:
         protected_ids = set()
 
         for instance in managed:
+            from shapeforge.arrays import protected_ids as array_protected_ids
+            protected_ids.update(array_protected_ids(instance))
             instance_id = instance.property("shapeforge.instance_id")
 
             if instance_id:
@@ -685,6 +710,8 @@ class Session:
                 protected_ids.add(relation["reference_id"])
 
         for shape, definition in self.parametric_boxes():
+            from shapeforge.arrays import protected_ids as array_protected_ids
+            protected_ids.update(array_protected_ids(shape))
             protected_ids.update(ref["reference_id"]
                                  for ref in self.box_position_references(definition))
             raw = shape.property("shapeforge.placement")
@@ -706,6 +733,9 @@ class Session:
         }
         reserved.discard(None)
         reserved.discard("")
+        reserved.update(protected_ids)
+        for layer in self.layout.layer_indexes():
+            reserved.update(shape.property("shapeforge.object_id") for shape in self.cell.shapes(layer).each())
 
         seen = set()
         updates = []
@@ -973,6 +1003,13 @@ class Session:
             instance.property("shapeforge.instance_id")
             for instance in instances
         }
+        from shapeforge.arrays import protected_ids as array_protected_ids
+        for instance in instances:
+            reserved.update(array_protected_ids(instance))
+        for layer in self.layout.layer_indexes():
+            for shape in self.cell.shapes(layer).each():
+                reserved.add(shape.property("shapeforge.object_id"))
+                reserved.update(array_protected_ids(shape))
 
         updates = []
 
@@ -998,6 +1035,8 @@ class Session:
 
                 # La copia queda libre; no hereda la relación del destino.
                 instance.delete_property("shapeforge.placement")
+                instance.delete_property("shapeforge.array")
+                instance.delete_property("shapeforge.array_member")
         finally:
             view.commit()
 
@@ -1049,6 +1088,12 @@ class Session:
         instance = matches[0]
         if instance.size() != 1 or instance.is_regular_array():
             raise ValueError("Port width references do not support instance arrays.")
+        width_magnification = abs(instance.dcplx_trans.mag)
+        member = instance.property("shapeforge.array_member")
+        if member is not None and component_replacements is not None:
+            from shapeforge.arrays import locate
+            owner = locate(self, json.loads(member)["owner_id"])
+            width_magnification = abs(owner.dcplx_trans.mag)
         generated = (component_replacements or {}).get(value["reference_id"])
         component = generated.component if generated is not None else self.components.get(self.component_id_for_instance(instance))
         if component is None:
@@ -1056,7 +1101,7 @@ class Session:
         ports = {port.name: port for port in component.ports}
         if value["port"] not in ports:
             raise ValueError(f"Port width reference {value['reference_id']} has no port '{value['port']}'.")
-        return positive_width(float(ports[value["port"]].width) * abs(instance.dcplx_trans.mag)
+        return positive_width(float(ports[value["port"]].width) * width_magnification
                               / positive_width(abs(magnification)))
 
     def resolve_via_inputs(self, values, magnification=1, component_replacements=None):
@@ -1083,6 +1128,12 @@ class Session:
             objects.extend(self.cell.shapes(layer).each())
         for obj in objects:
             identity = obj.property("shapeforge.instance_id") or obj.property("shapeforge.object_id") or "object"
+            raw_array = obj.property("shapeforge.array")
+            if raw_array is not None:
+                definition = json.loads(raw_array)
+                for key in ("columns", "rows", "dx_um", "dy_um"):
+                    if name in references(definition[key]):
+                        usages.append(f"{identity}: array {key}")
             raw = obj.property("shapeforge.geometry_parameters")
             if raw is not None:
                 for field, value in input_expressions(json.loads(raw)):
@@ -1266,9 +1317,9 @@ class Session:
             view.commit()
 
     def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None,
-                       via_center_replacement=None):
+                       via_center_replacement=None, array_replacement=None):
         """Plan dimensions, referenced extents and placement without mutation."""
-        objects = self.placement_objects(box_replacement=box_replacement, component_replacements=component_replacements)
+        objects = self.placement_objects(box_replacement=box_replacement, component_replacements=component_replacements or {})
         if via_center_replacement is not None:
             identity, position = via_center_replacement
             if identity not in objects:
@@ -1277,6 +1328,8 @@ class Session:
         for object_id, generated in (component_replacements or {}).items():
             objects[object_id]["component"] = generated.component
             objects[object_id]["local_box"] = generated.component.kdb_cell.dbbox()
+        from shapeforge.arrays import prepare, member_transform
+        removals = prepare(self, objects, array_replacement)
         relations = {}
         for object_id, item in objects.items():
             raw = item["object"].property("shapeforge.placement")
@@ -1294,8 +1347,13 @@ class Session:
             raise RuntimeError("The target box no longer exists.")
 
         dependencies = {key: set() for key in objects}
+        for identity, item in objects.items():
+            if item.get("array_member") is not None:
+                if identity in relations:
+                    raise ValueError("Array controls this repetition's position. Edit the base or dissolve the array.")
+                dependencies[identity].add(item["array_member"]["owner_id"])
         for target_id, item in objects.items():
-            if item["type"] == "box":
+            if item["type"] == "box" and item.get("array_member") is None:
                 definition = item["definition"]
                 position_refs = self.box_position_references(definition)
                 if (position_refs or any(f"{axis}_center" in definition for axis in ("x", "y"))) and target_id in relations:
@@ -1340,7 +1398,13 @@ class Session:
             for reference_id in sorted(dependencies[object_id]):
                 visit(reference_id)
             item = objects[object_id]
-            if item["type"] == "box":
+            if item.get("array_member") is not None:
+                owner = item["array_member"]["owner_id"]
+                if item["type"] == "box":
+                    item["local_box"] = objects[owner]["local_box"]
+                    item["definition"] = {"version": 1, "width_um": item["local_box"].width(), "height_um": item["local_box"].height()}
+                transforms[object_id] = member_transform(self, item, objects[owner], transforms[owner])
+            if item["type"] == "box" and item.get("array_member") is None:
                 transforms[object_id] = self.box_extent_transform(
                     item, objects, transforms)
             position = item.get("via_center") or item.get("port_position")
@@ -1371,7 +1435,7 @@ class Session:
                     transform_b=transforms[object_id])
                 transforms[object_id] = transform
                 offsets[object_id] = (dx, dy)
-            if item["type"] == "box" or relation is not None or governed:
+            if item["type"] == "box" or relation is not None or governed or item.get("array") is not None or item.get("array_member") is not None:
                 order.append(object_id)
             path.pop()
             visiting.remove(object_id)
@@ -1379,6 +1443,7 @@ class Session:
         for object_id in sorted(objects):
             visit(object_id)
         updates = [(objects[key], transforms[key]) for key in order]
+        updates.extend(({"type": "array_remove", "id": identity}, None) for identity in sorted(removals))
         return updates, offsets
 
     def placement_bbox(self, item, transform):
@@ -1800,6 +1865,8 @@ class Session:
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
 
         shape = self.selected_box()
+        if shape.property("shapeforge.array_member") is not None:
+            raise ValueError("Array boxes inherit size and position. Edit the base or dissolve the array.")
         raw = shape.property("shapeforge.box")
         if raw is not None and (self.box_extent_references(json.loads(raw))
                                 or any(f"{axis}_center" in json.loads(raw) for axis in ("x", "y"))):
@@ -1897,6 +1964,9 @@ class Session:
                  "instance": instance, "component": self.components.get(component_id),
                  "port_position": position,
                  "via_center": via_center,
+                 "array": json.loads(instance.property("shapeforge.array")) if instance.property("shapeforge.array") else None,
+                 "array_member": json.loads(instance.property("shapeforge.array_member")) if instance.property("shapeforge.array_member") else None,
+                 "recipe": recipe,
                  "name": cell.name, "label": f"{'Project port' if is_project_port(recipe) else 'Instance'} {cell.name} | {object_id}"})
         for shape, definition in self.parametric_boxes():
             object_id = shape.property("shapeforge.object_id")
@@ -1904,6 +1974,8 @@ class Session:
                 definition = box_replacement[1]
             self.validate_box_definition(definition)
             current = shape.box
+            layer = next(layer for layer in self.layout.layer_indexes()
+                         if any(other == shape for other in self.cell.shapes(layer).each()))
             width = (self.dbu_to_um(current.width()) if definition.get("x_extents")
                      else definition["width_um"])
             height = (self.dbu_to_um(current.height()) if definition.get("y_extents")
@@ -1923,6 +1995,9 @@ class Session:
             add({"id": object_id, "type": "box", "object": shape,
                  "shape": shape, "component": None, "local_box": local,
                  "definition": definition,
+                 "layer": layer,
+                 "array": json.loads(shape.property("shapeforge.array")) if shape.property("shapeforge.array") else None,
+                 "array_member": json.loads(shape.property("shapeforge.array_member")) if shape.property("shapeforge.array_member") else None,
                  "name": "Parametric box", "label": f"Box | {object_id}"})
         return result
 
@@ -1934,8 +2009,12 @@ class Session:
                              self.dbu_to_um(box.left), self.dbu_to_um(box.bottom))
 
     def apply_placement_updates(self, updates):
+        from shapeforge.arrays import apply_metadata
+        apply_metadata(self, updates)
         # No iterators are active while mutating KLayout objects.
         for item, transform in updates:
+            if item["type"] == "array_remove":
+                continue
             if item["type"] == "instance":
                 instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == item["id"])
                 instance.dcplx_trans = transform
@@ -1944,7 +2023,9 @@ class Session:
                 y = self.um_to_dbu(transform.disp.y)
                 width = self.um_to_dbu(item["local_box"].width())
                 height = self.um_to_dbu(item["local_box"].height())
-                item["shape"].box = pya.Box(x, y, x + width, y + height)
+                from shapeforge.arrays import locate_box
+                shape, _ = locate_box(self, item["id"])
+                shape.box = pya.Box(x, y, x + width, y + height)
 
     def selected_placement_object(self, obj, objects):
         if obj.top != self.cell.cell_index():
@@ -1978,7 +2059,22 @@ class Session:
                     duplicates.append(shape)
         if not duplicates:
             return 0
-        updates = [(shape, str(uuid4())) for shape in duplicates]
+        from shapeforge.arrays import protected_ids
+        reserved = set()
+        for layer in self.layout.layer_indexes():
+            for shape in self.cell.shapes(layer).each():
+                reserved.add(shape.property("shapeforge.object_id"))
+                reserved.update(protected_ids(shape))
+        for instance in self.cell.each_inst():
+            reserved.add(instance.property("shapeforge.instance_id"))
+            reserved.update(protected_ids(instance))
+        updates = []
+        for shape in duplicates:
+            identity = str(uuid4())
+            while identity in reserved:
+                identity = str(uuid4())
+            reserved.add(identity)
+            updates.append((shape, identity))
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
@@ -1987,6 +2083,8 @@ class Session:
             for shape, new_id in updates:
                 shape.set_property("shapeforge.object_id", new_id)
                 shape.delete_property("shapeforge.placement")
+                shape.delete_property("shapeforge.array")
+                shape.delete_property("shapeforge.array_member")
         finally:
             view.commit()
         return len(updates)
@@ -2130,6 +2228,8 @@ class Session:
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
         shape, object_id, _, _ = self.selected_box_definition()
+        if shape.property("shapeforge.array_member") is not None:
+            raise ValueError("Array boxes inherit size and position. Edit the base or dissolve the array.")
         self.validate_box_definition(definition)
         serialized = json.dumps(definition, allow_nan=False)
         components = self.primitive_update_plan()
@@ -2140,6 +2240,8 @@ class Session:
         view.transaction("ShapeForge: define box extents")
         try:
             self.apply_regeneration_plan(components, updates)
+            from shapeforge.arrays import locate_box
+            shape, _ = locate_box(self, object_id)
             shape.set_property("shapeforge.box", serialized)
         finally:
             view.commit()
@@ -2148,6 +2250,13 @@ class Session:
     def box_info(self):
         shape, object_id, definition, objects = self.selected_box_definition()
         lines = [f"Box ID: {object_id}"]
+        member = shape.property("shapeforge.array_member")
+        if member:
+            member = json.loads(member)
+            lines.append(f"Array repetition ({member['row']}, {member['column']}): inherits size and position from {member['owner_id']}.")
+        raw_array = shape.property("shapeforge.array")
+        if raw_array:
+            lines.append("Array: " + json.dumps({key: value for key, value in json.loads(raw_array).items() if key != "members"}))
         for axis, dimension in (("x", "width_um"), ("y", "height_um")):
             extents = definition.get(f"{axis}_extents")
             if extents:

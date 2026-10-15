@@ -70,6 +70,21 @@ def selection_context(session):
             actions["show_ports"] = reason or (None if component is not None and len(component.ports) else "No linked component ports.")
             actions["keep_selected_instance_id"] = (None if duplicate and not arrays else "Available for copied instance IDs.")
             from shapeforge.project_ports import is_project_port
+            array_raw = target.property("shapeforge.array")
+            member_raw = target.property("shapeforge.array_member")
+            in_array = array_raw is not None or member_raw is not None
+            actions["create_array"] = reason or ("Already belongs to an array. Use Edit Array." if in_array else
+                                                 "Project interface ports cannot be repeated." if is_project_port(recipe) else
+                                                 None if object_id and component is not None else "Requires a registered component.")
+            for name in ("edit_array", "dissolve_array"):
+                actions[name] = reason or (None if in_array else "Select an array base or repetition.")
+            if array_raw:
+                definition_array = json.loads(array_raw)
+                lines.append("Array: " + json.dumps({key: value for key, value in definition_array.items() if key != "members"}))
+            if member_raw:
+                member = json.loads(member_raw)
+                lines.append(f"Array repetition ({member['row']}, {member['column']}); base: {member['owner_id']}")
+                actions["edit_primitive_parameters"] = "Inherits geometry from the array base. Edit the base or dissolve the array."
             from shapeforge.technology import is_via_stack
             if is_via_stack(recipe):
                 result["kind"] = "via_stack"
@@ -90,6 +105,20 @@ def selection_context(session):
             for name in ("define_box_extents", "define_box_center", "box_info"):
                 actions[name] = reason or (None if definition and object_id else "Make Box Parametric first.")
             actions["keep_selected_box_id"] = None if duplicate else "Available for copied box IDs."
+            array_raw = target.property("shapeforge.array")
+            member_raw = target.property("shapeforge.array_member")
+            in_array = array_raw is not None or member_raw is not None
+            actions["create_array"] = reason or ("Already belongs to an array. Use Edit Array." if in_array else
+                                                 None if definition and object_id else "Make Box Parametric first.")
+            for name in ("edit_array", "dissolve_array"):
+                actions[name] = reason or (None if in_array else "Select an array base or repetition.")
+            if array_raw:
+                lines.append("Array: " + json.dumps({key: value for key, value in json.loads(array_raw).items() if key != "members"}))
+            if member_raw:
+                member = json.loads(member_raw)
+                lines.append(f"Array repetition ({member['row']}, {member['column']}); base: {member['owner_id']}")
+                for name in ("make_box_parametric", "define_box_extents", "define_box_center"):
+                    actions[name] = "Inherits size and position from the array base. Edit the base or dissolve the array."
         registered = object_id and (instance or definition)
         base = reason or (None if registered else "Register this object with ShapeForge first.")
         raw = target.property("shapeforge.placement")
@@ -104,6 +133,10 @@ def selection_context(session):
             if raw_position and any(f"{axis}_center" in json.loads(raw_position) for axis in ("x", "y")):
                 for name in ("panel_place_by_edges", "panel_place_by_ports"):
                     actions[name] = "Centers control its position. Free both coordinates to use placement."
+        if target.property("shapeforge.array_member") is not None:
+            for name in ("panel_place_by_edges", "panel_place_by_ports", "edit_placement", "remove_placement"):
+                if name in actions:
+                    actions[name] = "Array controls this repetition's position. Edit the base or dissolve the array."
         actions["regenerate_placement"] = base
         # Full dependency checks can fail elsewhere in the layout. Keep inspection
         # and ID recovery usable instead of making the whole panel disappear.

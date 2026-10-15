@@ -281,6 +281,50 @@ def define_via_center():
     run_session_action(execute)
 
 
+def array_dialog(session, editing=False):
+    from shapeforge.arrays import ARRAY, selected_owner, configure, validate_definition
+    identity, source = selected_owner(session)
+    raw = source.property(ARRAY)
+    if editing and raw is None:
+        raise ValueError("Select an array base or one of its repetitions.")
+    if not editing and raw is not None:
+        raise ValueError("This instance already belongs to an array. Use Edit Array.")
+    definition = json.loads(raw) if raw else {"version": 1, "columns": 2, "rows": 1, "spacing": "gap", "dx_um": 5, "dy_um": 5, "members": {}}
+    for key, label in (("columns", "Columns (includes the base):"), ("rows", "Rows (includes the base):")):
+        text = pya.InputDialog.ask_string("ShapeForge — Array", label + " number or expression", str(definition[key]))
+        if text is None:
+            return
+        definition[key] = session.parse_offset(text)
+    choices = ["Edge gap", "Origin pitch"]
+    choice = pya.InputDialog.ask_item("ShapeForge — Array", "Spacing in layout X/Y:", choices, 0 if definition["spacing"] == "gap" else 1)
+    if choice is None:
+        return
+    definition["spacing"] = "gap" if choice == choices[0] else "pitch"
+    for key, label in (("dx_um", "X spacing (µm):"), ("dy_um", "Y spacing (µm):")):
+        text = pya.InputDialog.ask_string("ShapeForge — Array", label + " number or expression", str(definition[key]))
+        if text is None:
+            return
+        definition[key] = session.parse_offset(text)
+    validate_definition(definition, session.parameters())
+    current, _ = selected_owner(session)
+    if current != identity:
+        raise ValueError("The selected array base changed. Retry the action.")
+    configure(session, definition)
+
+
+def create_array():
+    run_session_action(lambda session: array_dialog(session))
+
+
+def edit_array():
+    run_session_action(lambda session: array_dialog(session, editing=True))
+
+
+def dissolve_array():
+    from shapeforge.arrays import dissolve
+    run_session_action(dissolve)
+
+
 def save_project():
     def execute(session):
         session.validate()
@@ -1583,6 +1627,9 @@ def start():
         ("define_box_extents", "Define Box Extents...", define_box_extents),
         ("define_box_center", "Define Box Center...", define_box_center),
         ("define_via_center", "Define Via Center...", define_via_center),
+        ("create_array", "Create Array...", create_array),
+        ("edit_array", "Edit Array...", edit_array),
+        ("dissolve_array", "Dissolve Array", dissolve_array),
         ("box_info", "Box Info", box_info),
     ]:
         action = pya.Action()

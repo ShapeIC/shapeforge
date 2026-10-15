@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 8
+VERSION = 10
 
 
 class ProjectError(ValueError):
@@ -137,8 +137,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in range(1, 9):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 8.")
+    if type(document.get("version")) is not int or document["version"] not in range(1, 11):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 10.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes"), "Project")
     if document["format"] != FORMAT:
@@ -190,8 +190,10 @@ def validate_document(document):
         ("instance", document["instances"], ("id", "component_id", "transform", "placement") +
          (("geometry_parameters",) if document["version"] >= 3 else ()) +
          (("port_position",) if document["version"] >= 6 else ()) +
-         (("via_center",) if document["version"] >= 7 else ())),
-        ("box", document["boxes"], ("id", "layer", "box_dbu", "definition", "placement")),
+         (("via_center",) if document["version"] >= 7 else ()) +
+         (("array", "array_member") if document["version"] >= 9 else ())),
+        ("box", document["boxes"], ("id", "layer", "box_dbu", "definition", "placement") +
+         (("array", "array_member") if document["version"] >= 10 else ())),
     ):
         for entry in rows:
             _object(entry, keys, kind)
@@ -252,6 +254,11 @@ def validate_document(document):
                 if box[2] <= box[0] or box[3] <= box[1]:
                     raise ProjectError("Box dimensions must be positive.")
     from shapeforge.project_ports import is_project_port
+    from shapeforge.arrays import validate_project
+    try:
+        array_owners, array_members, _ = validate_project(objects, components, parameters)
+    except ValueError as error:
+        raise ProjectError(str(error)) from error
     names = [components[entry["component_id"]]["arguments"]["pinName"] for entry in document["instances"]
              if is_project_port(components[entry["component_id"]])]
     if len(names) != len(set(names)):
@@ -268,6 +275,9 @@ def validate_document(document):
             raise ProjectError(f"Port width reference requires a linked instance: {reference['reference_id']}.")
 
     dimension_dependencies = {key: set() for key, (kind, _) in objects.items() if kind == "instance"}
+    for identity, member in array_members.items():
+        if objects[identity][0] == "instance":
+            dimension_dependencies[identity].add(member["owner_id"])
     for identity, (kind, entry) in objects.items():
         if kind == "instance" and entry.get("geometry_parameters"):
             for reference in width_references(entry["geometry_parameters"]["values"]):
@@ -288,6 +298,8 @@ def validate_document(document):
         visit_dimension(identity)
 
     dependencies = {key: set() for key in objects}
+    for identity, member in array_members.items():
+        dependencies[identity].add(member["owner_id"])
     for object_id, (kind, entry) in objects.items():
         relation = entry["placement"]
         if relation is not None:
@@ -466,6 +478,8 @@ def snapshot(session):
             "geometry_parameters": _property(instance, "shapeforge.geometry_parameters"),
             "port_position": _property(instance, "shapeforge.port_position"),
             "via_center": _property(instance, "shapeforge.via_center"),
+            "array": _property(instance, "shapeforge.array"),
+            "array_member": _property(instance, "shapeforge.array_member"),
         })
     for layer_index in session.layout.layer_indexes():
         info = session.layout.get_info(layer_index)
@@ -484,6 +498,8 @@ def snapshot(session):
                 "layer": {"layer": info.layer, "datatype": info.datatype, "name": info.name},
                 "box_dbu": [box.left, box.bottom, box.right, box.top],
                 "definition": definition, "placement": _property(shape, "shapeforge.placement"),
+                "array": _property(shape, "shapeforge.array"),
+                "array_member": _property(shape, "shapeforge.array_member"),
             })
     if unsupported:
         raise ProjectError("Project was not saved because it contains:\n" + "\n".join(sorted(set(unsupported))))
@@ -628,6 +644,9 @@ def prepare_project(path):
                 instance.set_property("shapeforge.port_position", json.dumps(entry["port_position"], allow_nan=False))
             if entry.get("via_center") is not None:
                 instance.set_property("shapeforge.via_center", json.dumps(entry["via_center"], allow_nan=False))
+            for key in ("array", "array_member"):
+                if entry.get(key) is not None:
+                    instance.set_property("shapeforge." + key, json.dumps(entry[key], allow_nan=False))
             if entry["placement"] is not None:
                 instance.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
         for entry in document["boxes"]:
@@ -638,6 +657,9 @@ def prepare_project(path):
             shape.set_property("shapeforge.box", json.dumps(entry["definition"], allow_nan=False))
             if entry["placement"] is not None:
                 shape.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
+            for key in ("array", "array_member"):
+                if entry.get(key) is not None:
+                    shape.set_property("shapeforge." + key, json.dumps(entry[key], allow_nan=False))
         components, updates = session.regeneration_plan()
         session.apply_regeneration_plan(components, updates)
         return PreparedProject(session, sorted(set(warnings)), path)
