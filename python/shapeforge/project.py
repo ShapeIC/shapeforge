@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 11
+VERSION = 12
 
 
 class ProjectError(ValueError):
@@ -154,8 +154,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in range(1, 12):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 11.")
+    if type(document.get("version")) is not int or document["version"] not in range(1, 13):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 12.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes") +
             (("public_parameters",) if document["version"] >= 11 else ()), "Project")
@@ -179,6 +179,10 @@ def validate_document(document):
     try:
         if document["version"] == 1 and any(isinstance(value, str) for value in parameters.values()):
             raise ValueError("Parameter formulas require project version 2.")
+        from shapeforge.parameters import is_measure, structural_parameters
+        if document["version"] < 12 and any(is_measure(v) for v in parameters.values()):
+            raise ValueError("Geometry measurement parameters require project version 12.")
+        parameters = structural_parameters(parameters)
         resolve_parameters(parameters)
     except ValueError as error:
         raise ProjectError(str(error)) from error
@@ -281,6 +285,14 @@ def validate_document(document):
                     raise ProjectError("box_dbu must contain four integer DBU coordinates.")
                 if box[2] <= box[0] or box[3] <= box[1]:
                     raise ProjectError("Box dimensions must be positive.")
+    from shapeforge.parameters import is_measure
+    for name, value in parameters.items():
+        if is_measure(value):
+            identity = value["reference_id"]
+            if identity not in objects:
+                raise ProjectError(f"Parameter {name}: missing reference object {identity}.")
+            if value["quantity"] == "port_width" and objects[identity][0] != "instance":
+                raise ProjectError(f"Parameter {name}: port width requires a linked instance.")
     from shapeforge.project_ports import is_project_port
     from shapeforge.arrays import validate_project
     try:

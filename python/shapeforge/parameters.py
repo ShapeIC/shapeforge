@@ -45,6 +45,9 @@ def expression_tree(value):
 
 
 def references(value):
+    if is_measure(value):
+        validate_measure(value)
+        return set()
     nodes = list(ast.walk(expression_tree(value)))
     functions = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
     return {node.id for node in nodes if isinstance(node, ast.Name) and id(node) not in functions}
@@ -72,46 +75,119 @@ def _evaluate(node, lookup):
     return _finite(left * right)
 
 
-def resolve_parameters(definitions):
+def is_measure(value):
+    return isinstance(value, dict) and value.get("kind") == "geometry_measure"
+
+
+def validate_measure(value):
+    keys = {"version", "kind", "reference_id", "quantity"}
+    if isinstance(value, dict) and value.get("quantity") == "port_width":
+        keys.add("port")
+    if (not isinstance(value, dict) or set(value) != keys or value.get("kind") != "geometry_measure"
+            or type(value.get("version")) is not int or value["version"] != 1
+            or value.get("quantity") not in ("width", "height", "port_width")
+            or not isinstance(value.get("reference_id"), str) or not value["reference_id"]
+            or "port" in keys and (not isinstance(value.get("port"), str) or not value["port"])):
+        raise ValueError("Invalid geometry measurement: specify version, reference ID, quantity and port for port_width.")
+
+
+def validate_definitions(definitions):
     if not isinstance(definitions, dict):
         raise ValueError("parameters must be an object.")
-    trees = {}
     for name, definition in definitions.items():
         if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name):
             raise ValueError(f"Invalid parameter name: {name!r}.")
-        trees[name] = expression_tree(definition)
+        validate_measure(definition) if is_measure(definition) else expression_tree(definition)
+    done, path = set(), []
+    def visit(name):
+        if name not in definitions:
+            raise ValueError(f"Unknown parameter: {name}")
+        if name in path:
+            raise ValueError("Parameter cycle detected: " + " -> ".join(path + [name]))
+        if name in done:
+            return
+        if len(path) >= 64:
+            raise ValueError("Parameter dependency chains must contain fewer than 64 levels.")
+        path.append(name)
+        for source in references(definitions[name]):
+            visit(source)
+        path.pop()
+        done.add(name)
+    for name in definitions:
+        visit(name)
+
+
+def derived_parameters(definitions):
+    validate_definitions(definitions)
+    derived = {name for name, value in definitions.items() if is_measure(value)}
+    while True:
+        extended = derived | {name for name, value in definitions.items() if references(value) & derived}
+        if extended == derived:
+            return derived
+        derived = extended
+
+
+class ParameterValues(dict):
+    """Serializable definitions with an operation-local, lazy value resolver."""
+    def __init__(self, definitions, measurement=None, lookup=None, structural=False):
+        super().__init__(definitions)
+        self.measurement, self.lookup, self.structural = measurement, lookup, structural
+
+
+def _lookup(definitions):
+    if isinstance(definitions, ParameterValues) and definitions.lookup is not None:
+        return definitions.lookup
     values, path = {}, []
     def lookup(name):
         if name in values:
             return values[name]
-        if name not in trees:
+        if name not in definitions:
             raise ValueError(f"Unknown parameter: {name}")
         if name in path:
-            raise ValueError("Parameter cycle detected: " + " -> ".join(path[path.index(name):] + [name]))
+            raise ValueError("Parameter cycle detected: " + " -> ".join(path + [name]))
         if len(path) >= 64:
             raise ValueError("Parameter dependency chains must contain fewer than 64 levels.")
         path.append(name)
         try:
-            values[name] = _evaluate(trees[name], lookup)
+            definition = definitions[name]
+            if is_measure(definition):
+                validate_measure(definition)
+                callback = getattr(definitions, "measurement", None)
+                if callback is None:
+                    raise ValueError(f"Parameter {name} requires a geometry measurement context.")
+                result = callback(definition)
+            else:
+                result = _evaluate(expression_tree(definition), lookup)
+            values[name] = _finite(result)
+            return values[name]
         finally:
             path.pop()
-        return values[name]
-    for name in sorted(trees):
-        lookup(name)
-    return values
+    return lookup
+
+
+def resolve_parameters(definitions):
+    validate_definitions(definitions)
+    lookup = _lookup(definitions)
+    return {name: lookup(name) for name in sorted(definitions)}
 
 
 def resolve_value(value, definitions):
-    values = resolve_parameters(definitions)
-    def lookup(name):
-        if name not in values:
-            raise ValueError(f"Unknown parameter: {name}")
-        return values[name]
-    return _evaluate(expression_tree(value), lookup)
+    # Structural project validation cannot know future geometry. Validate syntax
+    # and names now; numerical checks run on the fully reconstructed staged plan.
+    if getattr(definitions, "structural", False):
+        names = references(value)
+        if names - definitions.keys():
+            raise ValueError(f"Unknown parameter: {sorted(names - definitions.keys())[0]}")
+        if names & derived_parameters(definitions):
+            return 1.0
+    return _evaluate(expression_tree(value), _lookup(definitions))
 
 
 def parameter_definition(value):
     """Keep formulas as text and normalize numeric input for JSON storage."""
+    if is_measure(value):
+        validate_measure(value)
+        return dict(value)
     if isinstance(value, str):
         value = value.strip()
         try:
@@ -120,3 +196,17 @@ def parameter_definition(value):
             expression_tree(value)
             return value
     return _finite(value)
+
+
+def structural_parameters(definitions):
+    """Syntax/name validation scope; geometry-dependent numeric checks are staged."""
+    derived = derived_parameters(definitions)
+    ordinary = _lookup({name: 1.0 if name in derived else value for name, value in definitions.items()})
+    return ParameterValues(definitions, lookup=ordinary, structural=True)
+
+
+def describe_definition(definition):
+    if not is_measure(definition):
+        return str(definition)
+    label = {"width": "Width", "height": "Height", "port_width": "Port Width"}[definition["quantity"]]
+    return f"{label} · {definition['reference_id']}" + (f" / {definition['port']}" if "port" in definition else "")

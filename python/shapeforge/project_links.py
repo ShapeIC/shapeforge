@@ -20,6 +20,10 @@ def validate_public(names, parameters):
             or keyword.iskeyword(n) or n not in parameters for n in names)
             or len(names) != len(set(names))):
         raise ValueError("External parameters must be unique existing parameter names valid as Python arguments.")
+    from shapeforge.parameters import derived_parameters
+    derived = set(names) & derived_parameters(parameters)
+    if derived:
+        raise ValueError("Geometry-derived parameters must be internal. Uncheck External for: " + ", ".join(sorted(derived)))
     return list(names)
 
 
@@ -79,7 +83,7 @@ def read_tree(path, ancestors=()):
 def interface(path):
     document, _ = read_tree(path, _ancestors.get())
     names = document.get("public_parameters", [])
-    values = resolve_parameters(document["parameters"])
+    values = {name: resolve_value(name, document["parameters"]) for name in names}
     return [(name, document["parameters"][name], values[name]) for name in names]
 
 
@@ -97,7 +101,7 @@ def generate_project(source, overrides, pdk, parameters=None):
     names = document.get("public_parameters", [])
     effective = resolve_overrides(overrides, parameters or {}, names)
     document["parameters"].update(effective)
-    arguments = resolve_parameters(document["parameters"])
+    arguments = {name: resolve_value(name, document["parameters"]) for name in names}
     prepared = prepare_document(document, source)
     session = prepared.session
     if session.cell.dbbox().empty():

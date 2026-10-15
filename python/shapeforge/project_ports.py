@@ -101,6 +101,7 @@ def _stage(session):
     staged = Session(_DetachedCellView(layout), cell, session.grid_um)
     staged.components = dict(session.components)
     staged.component_recipes = dict(session.component_recipes)
+    staged.project_path = session.project_path
     return staged
 
 
@@ -138,6 +139,12 @@ def _rename_reference(value, object_id, old_name, new_name):
 
 def _rewrite_references(session, object_id, old_name, new_name):
     changes = []
+    parameters = session.parameter_definitions()
+    _rename_reference(parameters, object_id, old_name, new_name)
+    if parameters != session.parameter_definitions():
+        text = json.dumps(parameters, allow_nan=False)
+        session.cell.set_property("shapeforge.parameters", text)
+        changes.append((None, "shapeforge.parameters", text))
     objects = [(i, i.property("shapeforge.instance_id")) for i in session.cell.each_inst()]
     for layer in session.layout.layer_indexes():
         objects += [(s, s.property("shapeforge.object_id")) for s in session.cell.shapes(layer).each()]
@@ -219,6 +226,9 @@ def _change(session, object_id, values, position, orientation):
         _definition(session, live, values, position)
         live.dcplx_trans = transform
         for identity, key, text in reference_changes:
+            if identity is None:
+                session.cell.set_property(key, text)
+                continue
             for candidate in session.cell.each_inst():
                 if candidate.property("shapeforge.instance_id") == identity:
                     candidate.set_property(key, text)
@@ -228,7 +238,7 @@ def _change(session, object_id, values, position, orientation):
                         candidate.set_property(key, text)
         # Translate staged box handles to live shapes; instances are already
         # reacquired by stable ID by the existing planner's application method.
-        live_objects = session.placement_objects()
+        live_objects = session.placement_objects(raw=True)
         updates = [({**item, "shape": live_objects[item["id"]]["shape"]} if item["type"] == "box" else item, trans)
                    for item, trans in updates]
         session.apply_regeneration_plan(components, updates)
@@ -239,7 +249,9 @@ def _change(session, object_id, values, position, orientation):
 
 
 def usages(session, object_id):
-    result = []
+    from shapeforge.parameters import is_measure
+    result = [f"parameter {name}: geometry measurement" for name, value in session.parameter_definitions().items()
+              if is_measure(value) and value["reference_id"] == object_id]
     for identity, item in session.placement_objects().items():
         if identity == object_id:
             continue

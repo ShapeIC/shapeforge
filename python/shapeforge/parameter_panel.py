@@ -1,6 +1,7 @@
 """Embeddable parameter editor using KLayout's Qt bindings."""
 
 import pya
+from shapeforge.parameters import is_measure, derived_parameters, describe_definition
 
 
 class ParameterEditor:
@@ -9,6 +10,7 @@ class ParameterEditor:
         self.signature = None
         self.names = []
         self.on_change = None
+        self.linked_definition = None
         self.widget = content = pya.QWidget(parent)
         layout = pya.QVBoxLayout(content)
         self.status = pya.QLabel("Create or open a ShapeForge project.", content)
@@ -39,6 +41,10 @@ class ParameterEditor:
             row.addWidget(button)
             self.buttons.append(button)
         layout.addLayout(row)
+        link = pya.QPushButton("Link to Dimension…", content)
+        link.clicked = self.link_dimension
+        layout.addWidget(link)
+        self.buttons.append(link)
         regenerate = pya.QPushButton("Regenerate Placement", content)
         regenerate.clicked = self.regenerate
         layout.addWidget(regenerate)
@@ -63,6 +69,12 @@ class ParameterEditor:
                 status += " — open KLayout in editor mode"
         except Exception as error:
             status, available = str(error), False
+            if session is not None:
+                try:
+                    session.validate()
+                    available = session.layout.is_editable()
+                except Exception:
+                    pass
         signature = (id(session), status, definitions, values, public, available)
         if signature == self.signature:
             return
@@ -76,7 +88,7 @@ class ParameterEditor:
             self.names = sorted(definitions)
             self.table.rowCount = len(self.names)
             for row, name in enumerate(self.names):
-                for column, text in enumerate((name, str(definitions[name]), f"{values.get(name, float('nan')):g}", "yes" if name in public else "no")):
+                for column, text in enumerate((name, describe_definition(definitions[name]), f"{values[name]:g}" if name in values else "—", "yes" if name in public else "no")):
                     self.table.setItem(row, column, pya.QTableWidgetItem(text))
             self.table.resizeColumnsToContents()
             if previous_name in self.names:
@@ -102,13 +114,19 @@ class ParameterEditor:
                 self.refresh()
                 return
             self.name.text = name
-            self.definition.text = str(definition)
+            self.linked_definition = dict(definition) if is_measure(definition) else None
+            self.definition.text = describe_definition(definition)
+            derived = name in derived_parameters(session.parameters())
+            self.external.enabled = session.layout.is_editable() and not derived
+            self.external.toolTip = "Geometry-derived parameters are internal." if derived else "Ask when inserting this project."
             self.external.checked = name in session.public_parameters()
 
     def new(self, *args):
         self.table.clearSelection()
         self.name.text = ""
         self.definition.text = ""
+        self.linked_definition = None
+        self.external.enabled = self.name.enabled
         self.external.checked = False
         self.name.setFocus()
 
@@ -125,8 +143,18 @@ class ParameterEditor:
         except Exception as error:
             pya.MessageBox.warning("ShapeForge — Parameters", str(error), pya.MessageBox.Ok)
 
+    def link_dimension(self, *args):
+        from shapeforge import ui
+        name = self.name.text
+        def completed():
+            self.refresh()
+            if self.on_change is not None:
+                self.on_change()
+        ui.link_parameter_dimension(name, completed)
+
     def save(self, *args):
-        self.action(lambda session: session.set_parameter(self.name.text, self.definition.text, external=self.external.checked))
+        value = self.linked_definition if self.linked_definition is not None and self.definition.text == describe_definition(self.linked_definition) else self.definition.text
+        self.action(lambda session: session.set_parameter(self.name.text, value, external=self.external.checked))
 
     def delete(self, *args):
         self.action(lambda session: session.delete_parameter(self.name.text.strip()))

@@ -691,6 +691,43 @@ def edit_placement():
 
 def remove_placement():
     run_session_action(lambda session: session.remove_placement())
+def link_parameter_dimension(name, completed=None):
+    def execute(session):
+        name_value = name.strip()
+        if not name_value:
+            raise ValueError("Enter a parameter name before linking a dimension.")
+        labels = ["Width", "Height", "Port Width"]
+        choice = pya.InputDialog.ask_item("ShapeForge — Link Parameter", "Dimension (layout axes, µm):", labels, 0)
+        if choice is None:
+            return
+        quantity = {"Width": "width", "Height": "height", "Port Width": "port_width"}[choice]
+        objects = session.placement_objects(raw=True)
+        candidates = [item for item in objects.values() if quantity != "port_width" or
+                      item["type"] == "instance" and item["component"] is not None and len(item["component"].ports)]
+        candidates = [item for item in candidates if item["type"] != "instance" or
+                      not item["instance"].is_regular_array() and item["instance"].size() == 1]
+        if not candidates:
+            raise ValueError("No registered objects are available for this measurement.")
+        identity = yield from pick_reference(session, candidates, "Select the object to measure.")
+        if identity is None:
+            return
+        item = session.placement_objects(raw=True).get(identity)
+        if item is None:
+            raise ValueError("The measurement reference was removed. Retry the action.")
+        definition = {"version": 1, "kind": "geometry_measure", "reference_id": identity, "quantity": quantity}
+        if quantity == "port_width":
+            names = [port.name for port in item["component"].ports]
+            port = pya.InputDialog.ask_item("ShapeForge — Link Parameter", "Port:", names, 0)
+            if port is None:
+                return
+            definition["port"] = port
+        # Never silently remove a public flag when replacing an existing parameter.
+        session.set_parameter(name_value, definition)
+        if completed is not None:
+            completed()
+    return run_session_action(execute)
+
+
 def pick_reference(session, candidates, prompt, required_ids=()):
     from shapeforge.reference_picker import ReferenceRequest
     identity = yield ReferenceRequest(tuple(item["id"] for item in candidates), prompt, tuple(required_ids))

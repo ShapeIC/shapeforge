@@ -25,7 +25,7 @@ class ReferencePicker:
         self.main_window = main_window
         self.view = session.cellview.view()
         self.saved_selection = list(self.view.object_selection)
-        objects = session.placement_objects()
+        objects = session.placement_objects(raw=True)
         self.saved_ids = []
         for obj in self.saved_selection:
             try:
@@ -79,7 +79,7 @@ class ReferencePicker:
             if self.session.cellview.cell != self.session.cell:
                 self.finish(None)
                 return
-            objects = self.session.placement_objects()
+            objects = self.session.placement_objects(raw=True)
             if any(identity not in objects for identity in self.request.required_ids):
                 raise RuntimeError("The destination or an original selected object was removed. Retry the action.")
         except Exception as error:
@@ -107,7 +107,7 @@ class ReferencePicker:
         self.session.validate()
         if self.session.cellview.cell != self.session.cell:
             return
-        objects = self.session.placement_objects()
+        objects = self.session.placement_objects(raw=True)
         selection = []
         for identity, original in zip(self.saved_ids, self.saved_selection):
             if identity is None:

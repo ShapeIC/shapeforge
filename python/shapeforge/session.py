@@ -31,6 +31,7 @@ class Session:
 
         self.components = {}
         self.component_recipes = {}
+        self._evaluation = None
         self.project_path = None
         self.port_markers = []
 
@@ -220,7 +221,7 @@ class Session:
                 raise ValueError("Relink requires a linked project instance.")
             recipe = dict(recipe, source=str(Path(source).resolve()))
         from shapeforge.technology import is_via_stack
-        if recipe["provider"] == "shapeforge-project":
+        if recipe["provider"] == "shapeforge-project" or self.has_measurements():
             identity = instance.property("shapeforge.instance_id")
             planned = self.primitive_update_plan(input_replacements={identity: geometry}, recipe_replacements={identity: recipe})
             self.placement_plan(component_replacements=planned)
@@ -275,6 +276,9 @@ class Session:
             instance.set_property("shapeforge.geometry_parameters", json.dumps(definition, allow_nan=False))
 
     def primitive_update_plan(self, input_replacements=None, recipe_replacements=None):
+        if self.has_measurements():
+            from shapeforge.evaluation import Evaluation
+            return Evaluation(self, input_replacements=input_replacements, recipe_replacements=recipe_replacements).plan()[0]
         from shapeforge.project_links import project_scope
         with project_scope(self.project_path):
             return self._primitive_update_plan(input_replacements, recipe_replacements)
@@ -343,6 +347,9 @@ class Session:
     def regeneration_plan(self, via_center_replacement=None):
         from shapeforge.project_ports import validate_names
         validate_names(self)
+        if self.has_measurements():
+            from shapeforge.evaluation import Evaluation
+            return Evaluation(self, via_center_replacement=via_center_replacement).plan()
         components = self.primitive_update_plan()
         updates, _ = self.placement_plan(component_replacements=components,
                                          via_center_replacement=via_center_replacement)
@@ -705,7 +712,7 @@ class Session:
                 managed.append(instance)
 
         groups = {}
-        protected_ids = set()
+        protected_ids = self.measurement_reference_ids()
 
         for instance in managed:
             from shapeforge.arrays import protected_ids as array_protected_ids
@@ -738,7 +745,7 @@ class Session:
         for instance_id, group in groups.items():
             if len(group) > 1 and instance_id in protected_ids:
                 raise RuntimeError(
-                    "A duplicated ID participates in placement.\n"
+                    "A duplicated ID participates in placement or geometry references.\n"
                     "Select the instance that should keep its identity "
                     "and run Keep Selected Instance ID."
                 )
@@ -851,8 +858,9 @@ class Session:
 
         # Validar y calcular con la relación propuesta,
         # sin guardarla todavía.
+        components = {}
         updates, offsets = self.placement_plan(
-            replacement=(b["id"], relation)
+            replacement=(b["id"], relation), component_replacements=components
         )
 
         instances = self.placement_instances()
@@ -864,7 +872,8 @@ class Session:
         view.transaction("ShapeForge: define placement")
 
         try:
-            self.apply_placement_updates(updates)
+            self.apply_regeneration_plan(components, updates)
+            target = self.placement_objects(raw=True)[b["id"]]["object"]
 
             target.set_property(
                 "shapeforge.placement",
@@ -1020,6 +1029,7 @@ class Session:
             instance.property("shapeforge.instance_id")
             for instance in instances
         }
+        reserved.update(self.measurement_reference_ids())
         from shapeforge.arrays import protected_ids as array_protected_ids
         for instance in instances:
             reserved.update(array_protected_ids(instance))
@@ -1059,7 +1069,44 @@ class Session:
 
         return len(updates)
 
+    def measurement_reference_ids(self):
+        from shapeforge.parameters import is_measure
+        return {value["reference_id"] for value in self.parameter_definitions().values() if is_measure(value)}
+
+    def has_measurements(self):
+        from shapeforge.parameters import is_measure
+        return any(is_measure(v) for v in self.parameter_definitions().values())
+
+    def current_measurement(self, definition):
+        """Read committed native geometry, without generating or moving anything."""
+        from shapeforge.parameters import validate_measure
+        from shapeforge.arrays import locate
+        validate_measure(definition)
+        obj = locate(self, definition["reference_id"])
+        instance = hasattr(obj, "cell_index")
+        if instance and (obj.is_regular_array() or obj.size() != 1):
+            raise ValueError("Measurements require an individual registered instance.")
+        if not instance and (not obj.is_box() or obj.property("shapeforge.box") is None):
+            raise ValueError("Measurements require a parametric box.")
+        quantity = definition["quantity"]
+        if quantity == "port_width":
+            if not instance:
+                raise ValueError("Port width requires a linked instance.")
+            return self.resolve_dimension({"kind": "port_width", "reference_id": definition["reference_id"], "port": definition["port"]})
+        bounds = obj.dbbox() if instance else obj.box.to_dtype(self.layout.dbu)
+        value = bounds.width() if quantity == "width" else bounds.height()
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("Measured dimension must be positive and finite.")
+        return value
+
     def parameters(self):
+        self.validate()
+        if self._evaluation is not None:
+            return self._evaluation.parameters
+        from shapeforge.parameters import ParameterValues
+        return ParameterValues(self.parameter_definitions(), measurement=self.current_measurement)
+
+    def parameter_definitions(self):
         self.validate()
 
         raw = self.cell.property("shapeforge.parameters")
@@ -1084,9 +1131,15 @@ class Session:
 
         name = name.strip()
 
-        parameters = self.parameters()
+        parameters = self.parameter_definitions()
         parameters[name] = parameter_definition(value_um)
-        resolve_parameters(parameters)
+        from shapeforge.parameters import derived_parameters
+        derived = derived_parameters(parameters)
+        if derived:
+            from shapeforge.evaluation import Evaluation
+            Evaluation(self, definitions=parameters).plan()
+        else:
+            resolve_parameters(parameters)
         serialized = json.dumps(parameters, allow_nan=False)
         public = self.public_parameters()
         if external is True and name not in public:
@@ -1118,6 +1171,9 @@ class Session:
         if not isinstance(value, dict):
             return self.resolve_offset(value)
         validate_port_width(value)
+        if self._evaluation is not None:
+            return self._evaluation.measure({"version": 1, "kind": "geometry_measure",
+                "reference_id": value["reference_id"], "quantity": "port_width", "port": value["port"]}) / positive_width(abs(magnification))
         matches = [i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == value["reference_id"]]
         if len(matches) != 1:
             raise ValueError(f"Missing or duplicate port width reference: {value['reference_id']}.")
@@ -1357,6 +1413,16 @@ class Session:
     def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None,
                        via_center_replacement=None, array_replacement=None):
         """Plan dimensions, referenced extents and placement without mutation."""
+        if self.has_measurements():
+            from shapeforge.evaluation import Evaluation
+            planner = Evaluation(self, replacement=replacement, box_replacement=box_replacement,
+                component_replacements=component_replacements, via_center_replacement=via_center_replacement,
+                array_replacement=array_replacement)
+            components, updates = planner.plan()
+            if component_replacements is not None:
+                component_replacements.clear()
+                component_replacements.update(components)
+            return updates, planner.offsets
         objects = self.placement_objects(box_replacement=box_replacement, component_replacements=component_replacements or {})
         if via_center_replacement is not None:
             identity, position = via_center_replacement
@@ -1944,6 +2010,9 @@ class Session:
         if not box_id:
             box_id = str(uuid4())
 
+        if self.has_measurements() and raw is not None:
+            self.placement_plan(box_replacement=(box_id, definition))
+
         view = self.cellview.view()
         view.cancel()
         view.transaction("ShapeForge: define parametric box")
@@ -1965,7 +2034,7 @@ class Session:
         # never use stale box dimensions.
         return self.regenerate_placement()
 
-    def placement_objects(self, box_replacement=None, resolve_dimensions=True, component_replacements=None):
+    def placement_objects(self, box_replacement=None, resolve_dimensions=True, component_replacements=None, raw=False):
         """Collect instances and parametric boxes in the working cell."""
         self.validate()
         result = {}
@@ -1983,18 +2052,18 @@ class Session:
                 raise RuntimeError("Placement does not support instance arrays.")
             cell = self.layout.cell(instance.cell_index)
             component_id = self.component_id_for_instance(instance)
-            raw = instance.property("shapeforge.port_position")
-            position = json.loads(raw) if raw else None
+            position_raw = instance.property("shapeforge.port_position")
+            position = json.loads(position_raw) if position_raw else None
             raw_center = instance.property("shapeforge.via_center")
             via_center = json.loads(raw_center) if raw_center else None
             from shapeforge.project_ports import is_project_port, validate_position
             from shapeforge.technology import is_via_stack
             recipe = self.component_recipes.get(component_id)
-            if position is not None:
+            if position is not None and not raw:
                 if not is_project_port(recipe):
                     raise ValueError("Only project ports can have a port position definition.")
                 validate_position(position, self.parameters())
-            if via_center is not None:
+            if via_center is not None and not raw:
                 if not is_via_stack(recipe):
                     raise ValueError("Only via stacks can have a via center definition.")
                 validate_position(via_center, self.parameters())
@@ -2010,7 +2079,8 @@ class Session:
             object_id = shape.property("shapeforge.object_id")
             if box_replacement is not None and object_id == box_replacement[0]:
                 definition = box_replacement[1]
-            self.validate_box_definition(definition)
+            if not raw:
+                self.validate_box_definition(definition)
             current = shape.box
             layer = next(layer for layer in self.layout.layer_indexes()
                          if any(other == shape for other in self.cell.shapes(layer).each()))
@@ -2019,13 +2089,15 @@ class Session:
             height = (self.dbu_to_um(current.height()) if definition.get("y_extents")
                       else definition["height_um"])
             from shapeforge.dimensions import is_port_width
-            if resolve_dimensions:
+            if raw:
+                width, height = self.dbu_to_um(current.width()), self.dbu_to_um(current.height())
+            elif resolve_dimensions:
                 width = self.resolve_dimension(width, component_replacements)
                 height = self.resolve_dimension(height, component_replacements)
             else:
                 width = self.dbu_to_um(current.width()) if is_port_width(width) else width
                 height = self.dbu_to_um(current.height()) if is_port_width(height) else height
-            box = self.sized_box(shape, width, height)
+            box = current if raw else self.sized_box(shape, width, height)
             # Geometry is local to the box's lower-left corner. Translation
             # represents that corner in working-cell coordinates.
             local = pya.DBox(0, 0, self.dbu_to_um(box.width()),
@@ -2098,7 +2170,7 @@ class Session:
         if not duplicates:
             return 0
         from shapeforge.arrays import protected_ids
-        reserved = set()
+        reserved = self.measurement_reference_ids()
         for layer in self.layout.layer_indexes():
             for shape in self.cell.shapes(layer).each():
                 reserved.add(shape.property("shapeforge.object_id"))
