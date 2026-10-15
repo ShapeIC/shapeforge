@@ -1,6 +1,7 @@
 import pya
 import math
 import os
+from pathlib import Path
 from uuid import uuid4
 from shapeforge.components import (generate_cellkit, resolve_geometry, generate_inputs,
                                   input_definition, validate_input_definition, input_expressions)
@@ -192,11 +193,11 @@ class Session:
         if recipe is None:
             raw = self.layout.cell(instance.cell_index).property("shapeforge.component_recipe")
             recipe = None if raw is None else json.loads(raw)
-        if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology") or component_id not in self.components:
+        if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology", "shapeforge-project") or component_id not in self.components:
             raise RuntimeError("The selected instance needs a recorded generator recipe and linked component.")
         return instance, recipe
 
-    def edit_primitive_parameters(self, geometry):
+    def edit_primitive_parameters(self, geometry, source=None):
         """Replace only the selected instance's component; keep its identity and transform."""
         instance, recipe = self.selected_primitive_instance()
         if instance.property("shapeforge.array_member") is not None:
@@ -214,8 +215,19 @@ class Session:
         old_cell = self.layout.cell(instance.cell_index)
         if _geometry_signature(old_cell, self.layout.dbu) != _geometry_signature(old_source.kdb_cell, self.layout.dbu):
             raise RuntimeError("This component was edited manually. Its recipe cannot preserve those edits.")
+        if source is not None:
+            if recipe["provider"] != "shapeforge-project":
+                raise ValueError("Relink requires a linked project instance.")
+            recipe = dict(recipe, source=str(Path(source).resolve()))
         from shapeforge.technology import is_via_stack
-        if is_via_stack(recipe):
+        if recipe["provider"] == "shapeforge-project":
+            identity = instance.property("shapeforge.instance_id")
+            planned = self.primitive_update_plan(input_replacements={identity: geometry}, recipe_replacements={identity: recipe})
+            self.placement_plan(component_replacements=planned)
+            generated = planned.get(identity)
+            if generated is None:
+                generated = generate_inputs(recipe, geometry, self.parameters())
+        elif is_via_stack(recipe):
             identity = instance.property("shapeforge.instance_id")
             planned = self.primitive_update_plan(input_replacements={identity: geometry})
             generated = planned.get(identity) or generate_inputs(
@@ -262,7 +274,12 @@ class Session:
         else:
             instance.set_property("shapeforge.geometry_parameters", json.dumps(definition, allow_nan=False))
 
-    def primitive_update_plan(self, input_replacements=None):
+    def primitive_update_plan(self, input_replacements=None, recipe_replacements=None):
+        from shapeforge.project_links import project_scope
+        with project_scope(self.project_path):
+            return self._primitive_update_plan(input_replacements, recipe_replacements)
+
+    def _primitive_update_plan(self, input_replacements=None, recipe_replacements=None):
         objects = self.placement_objects(resolve_dimensions=False)
         from shapeforge.arrays import collect
         collect(objects, self.parameters(), validate_values=False)
@@ -298,11 +315,11 @@ class Session:
             replacement = (input_replacements or {}).get(object_id)
             definition = json.loads(raw) if raw is not None else None
             component_id = self.component_id_for_instance(instance)
-            recipe = self.component_recipes.get(component_id)
+            recipe = (recipe_replacements or {}).get(object_id, self.component_recipes.get(component_id))
             if replacement is not None:
                 definition = input_definition(replacement, recipe["provider"]) or {"version": 2, "values": replacement}
             if definition is not None:
-                if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology"):
+                if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology", "shapeforge-project"):
                     raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")
                 validate_input_definition(definition, recipe, self.parameters())
                 for ref in width_references(definition["values"]):
@@ -311,7 +328,7 @@ class Session:
                 if definition["version"] == 3:
                     values = self.resolve_via_inputs(values, instance.dcplx_trans.mag, updates)
                 generated = generate_inputs(recipe, values, self.parameters())
-                if generated.recipe != recipe or generated.component is not self.components[component_id]:
+                if generated.recipe != self.component_recipes.get(component_id) or generated.component is not self.components[component_id]:
                     if _geometry_signature(self.layout.cell(instance.cell_index), self.layout.dbu) != _geometry_signature(self.components[component_id].kdb_cell, self.layout.dbu):
                         raise ValueError(f"Instance {object_id} was edited manually; its recipe cannot preserve those edits.")
                     updates[object_id] = generated
@@ -1048,7 +1065,18 @@ class Session:
         raw = self.cell.property("shapeforge.parameters")
         return {} if raw is None else json.loads(raw)
 
-    def set_parameter(self, name, value_um):
+    def public_parameters(self):
+        from shapeforge.project_links import PUBLIC_PROPERTY, validate_public
+        raw = self.cell.property(PUBLIC_PROPERTY)
+        return validate_public(json.loads(raw) if raw else [], self.parameters())
+
+    def insert_project(self, source, overrides):
+        from shapeforge.project_links import generate_project, project_scope
+        with project_scope(self.project_path):
+            generated = generate_project(source, overrides, self.pdk, self.parameters())
+        return self.insert_generated(generated, overrides)
+
+    def set_parameter(self, name, value_um, external=None):
         self.validate()
 
         if not self.layout.is_editable():
@@ -1060,6 +1088,13 @@ class Session:
         parameters[name] = parameter_definition(value_um)
         resolve_parameters(parameters)
         serialized = json.dumps(parameters, allow_nan=False)
+        public = self.public_parameters()
+        if external is True and name not in public:
+            public.append(name)
+        elif external is False and name in public:
+            public.remove(name)
+        from shapeforge.project_links import validate_public
+        validate_public(public, parameters)
 
         view = self.cellview.view()
         view.cancel()
@@ -1070,6 +1105,7 @@ class Session:
                 "shapeforge.parameters",
                 serialized,
             )
+            self.cell.set_property("shapeforge.public_parameters", json.dumps(public))
         finally:
             view.commit()
 
@@ -1180,6 +1216,7 @@ class Session:
         usages = self.parameter_usages(name)
         if usages:
             raise ValueError(f"Cannot delete parameter {name}; used by:\n" + "\n".join(usages))
+        public = [n for n in self.public_parameters() if n != name]
         del parameters[name]
         resolve_parameters(parameters)
         view = self.cellview.view()
@@ -1187,6 +1224,7 @@ class Session:
         view.transaction(f"ShapeForge: delete parameter {name}")
         try:
             self.cell.set_property("shapeforge.parameters", json.dumps(parameters, allow_nan=False))
+            self.cell.set_property("shapeforge.public_parameters", json.dumps(public))
         finally:
             view.commit()
 

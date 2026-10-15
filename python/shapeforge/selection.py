@@ -65,7 +65,7 @@ def selection_context(session):
             bindings = target.property("shapeforge.geometry_parameters")
             if bindings:
                 lines.append("Bindings: " + bindings)
-            editable_recipe = recipe.get("provider") in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology") and component is not None
+            editable_recipe = recipe.get("provider") in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology", "shapeforge-project") and component is not None
             actions["edit_primitive_parameters"] = reason or (None if object_id and editable_recipe else "Requires a registered generator recipe and component.")
             actions["show_ports"] = reason or (None if component is not None and len(component.ports) else "No linked component ports.")
             actions["keep_selected_instance_id"] = (None if duplicate and not arrays else "Available for copied instance IDs.")
@@ -85,6 +85,10 @@ def selection_context(session):
                 member = json.loads(member_raw)
                 lines.append(f"Array repetition ({member['row']}, {member['column']}); base: {member['owner_id']}")
                 actions["edit_primitive_parameters"] = "Inherits geometry from the array base. Edit the base or dissolve the array."
+            if recipe.get("provider") == "shapeforge-project":
+                lines.append("Linked project: " + recipe["source"])
+                lines.append("External parameters: " + ", ".join(recipe["public_parameters"]))
+                actions["relink_project"] = actions["edit_primitive_parameters"]
             from shapeforge.technology import is_via_stack
             if is_via_stack(recipe):
                 result["kind"] = "via_stack"

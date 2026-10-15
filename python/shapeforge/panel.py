@@ -13,6 +13,7 @@ ACTION_TITLES = {
     "define_box_center": "Define Box Center…",
     "define_via_center": "Define Via Center…",
     "box_info": "Box Info",
+    "relink_project": "Relink Project…",
     "edit_primitive_parameters": "Edit Primitive Parameters…",
     "selection_info": "Selection Info",
     "show_ports": "Show Ports", "hide_ports": "Hide Ports",

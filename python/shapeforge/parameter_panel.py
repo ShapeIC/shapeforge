@@ -14,8 +14,8 @@ class ParameterEditor:
         self.status = pya.QLabel("Create or open a ShapeForge project.", content)
         self.status.wordWrap = True
         layout.addWidget(self.status)
-        self.table = pya.QTableWidget(0, 3, content)
-        self.table.setHorizontalHeaderLabels(["Parameter", "Definition", "Value (µm)"])
+        self.table = pya.QTableWidget(0, 4, content)
+        self.table.setHorizontalHeaderLabels(["Parameter", "Definition", "Value (µm)", "External"])
         self.table.editTriggers = pya.QAbstractItemView.NoEditTriggers
         self.table.selectionBehavior = pya.QAbstractItemView.SelectRows
         self.table.selectionMode = pya.QAbstractItemView.SingleSelection
@@ -28,6 +28,9 @@ class ParameterEditor:
         layout.addWidget(pya.QLabel("Number or expression: +, -, *, /, floor(expression), parentheses", content))
         self.definition = pya.QLineEdit(content)
         layout.addWidget(self.definition)
+        self.external = pya.QCheckBox("External (ask when inserting this project)", content)
+        self.external.checked = False
+        layout.addWidget(self.external)
         self.buttons = []
         row = pya.QHBoxLayout()
         for title, callback in (("New", self.new), ("Add / Update", self.save), ("Delete", self.delete)):
@@ -46,33 +49,34 @@ class ParameterEditor:
         if self.widget._destroyed():
             return
         session = self.session_getter()
-        definitions, values = {}, {}
+        definitions, values, public = {}, {}, []
         try:
             if session is None:
                 raise ValueError("Create or open a ShapeForge project.")
             session.validate()
             definitions = session.parameters()
             values = session.resolved_parameters()
+            public = session.public_parameters()
             status = f"{session.cell.name} — parameters in µm"
             available = session.layout.is_editable()
             if not available:
                 status += " — open KLayout in editor mode"
         except Exception as error:
             status, available = str(error), False
-        signature = (id(session), status, definitions, values, available)
+        signature = (id(session), status, definitions, values, public, available)
         if signature == self.signature:
             return
         previous_name = self.name.text if self.signature and self.signature[0] == id(session) else ""
         self.signature = signature
         self.status.text = status
-        for widget in [self.name, self.definition, self.table] + self.buttons:
+        for widget in [self.name, self.definition, self.external, self.table] + self.buttons:
             widget.enabled = available
         self.table.blockSignals(True)
         try:
             self.names = sorted(definitions)
             self.table.rowCount = len(self.names)
             for row, name in enumerate(self.names):
-                for column, text in enumerate((name, str(definitions[name]), f"{values.get(name, float('nan')):g}")):
+                for column, text in enumerate((name, str(definitions[name]), f"{values.get(name, float('nan')):g}", "yes" if name in public else "no")):
                     self.table.setItem(row, column, pya.QTableWidgetItem(text))
             self.table.resizeColumnsToContents()
             if previous_name in self.names:
@@ -81,6 +85,7 @@ class ParameterEditor:
                 self.table.clearSelection()
                 self.name.text = ""
                 self.definition.text = ""
+                self.external.checked = False
         finally:
             self.table.blockSignals(False)
         if previous_name in self.names:
@@ -98,11 +103,13 @@ class ParameterEditor:
                 return
             self.name.text = name
             self.definition.text = str(definition)
+            self.external.checked = name in session.public_parameters()
 
     def new(self, *args):
         self.table.clearSelection()
         self.name.text = ""
         self.definition.text = ""
+        self.external.checked = False
         self.name.setFocus()
 
     def action(self, callback):
@@ -119,7 +126,7 @@ class ParameterEditor:
             pya.MessageBox.warning("ShapeForge — Parameters", str(error), pya.MessageBox.Ok)
 
     def save(self, *args):
-        self.action(lambda session: session.set_parameter(self.name.text, self.definition.text))
+        self.action(lambda session: session.set_parameter(self.name.text, self.definition.text, external=self.external.checked))
 
     def delete(self, *args):
         self.action(lambda session: session.delete_parameter(self.name.text.strip()))

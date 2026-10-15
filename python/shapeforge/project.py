@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 10
+VERSION = 11
 
 
 class ProjectError(ValueError):
@@ -129,6 +129,23 @@ def _recipe(recipe, where):
         for package, value in recipe["versions"].items():
             _string(package, "versions package")
             _string(value, "versions value")
+    elif provider == "shapeforge-project":
+        _object(recipe, ("provider", "source", "pdk", "public_parameters", "overrides", "arguments",
+                         "source_digest", "dependency_digest", "versions"), where)
+        for key in ("source", "source_digest", "dependency_digest"):
+            _string(recipe[key], f"{where}.{key}")
+        if recipe["pdk"] is not None:
+            _string(recipe["pdk"], f"{where}.pdk")
+        from shapeforge.project_links import validate_public, resolve_overrides
+        validate_public(recipe["public_parameters"], recipe["arguments"])
+        if set(recipe["arguments"]) != set(recipe["public_parameters"]):
+            raise ProjectError("Linked project arguments differ from its saved interface.")
+        for values in (recipe["overrides"], recipe["arguments"]):
+            resolve_overrides(values, {}, recipe["public_parameters"])
+            for value in values.values():
+                _number(value, "linked project effective value")
+        if not isinstance(recipe["versions"], dict) or any(not isinstance(v, str) for v in recipe["versions"].values()):
+            raise ProjectError("Invalid linked project dependency versions.")
     else:
         raise ProjectError(f"{where}: unknown provider {provider!r}.")
 
@@ -137,10 +154,11 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in range(1, 11):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 10.")
+    if type(document.get("version")) is not int or document["version"] not in range(1, 12):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 11.")
     _object(document, ("format", "version", "project", "environment", "parameters",
-                       "components", "instances", "boxes"), "Project")
+                       "components", "instances", "boxes") +
+            (("public_parameters",) if document["version"] >= 11 else ()), "Project")
     if document["format"] != FORMAT:
         raise ProjectError("This file is not a ShapeForge project.")
     info = _object(document["project"], ("name", "description"), "project")
@@ -164,6 +182,11 @@ def validate_document(document):
         resolve_parameters(parameters)
     except ValueError as error:
         raise ProjectError(str(error)) from error
+    from shapeforge.project_links import validate_public
+    try:
+        validate_public(document.get("public_parameters", []), parameters)
+    except ValueError as error:
+        raise ProjectError(str(error)) from error
     for key in ("components", "instances", "boxes"):
         if not isinstance(document[key], list):
             raise ProjectError(f"{key} must be an array.")
@@ -182,6 +205,8 @@ def validate_document(document):
         if (entry["recipe"]["provider"] == "shapeic-cellkit-technology"
                 and entry["recipe"]["generator"] in ("via_stack", "project_port") and document["version"] < 6):
             raise ProjectError("Via stacks and project ports require project version 6.")
+        if entry["recipe"]["provider"] == "shapeforge-project" and document["version"] < 11:
+            raise ProjectError("Linked projects require project version 11.")
         pdk = entry["recipe"].get("pdk")
         if pdk is not None and pdk != environment["pdk"]:
             raise ProjectError("Component PDK differs from the project PDK.")
@@ -216,6 +241,9 @@ def validate_document(document):
                         raise ProjectError(f"Instance {entry['id']} geometry: {error}") from error
                 from shapeforge.project_ports import is_project_port, validate_position
                 recipe = components[entry["component_id"]]
+                if recipe["provider"] == "shapeforge-project" and entry.get("array_member") is None:
+                    if geometry_parameters is None or geometry_parameters["version"] != 4:
+                        raise ProjectError("Linked project bases require version 4 override bindings, including empty overrides.")
                 position = entry.get("port_position")
                 if position is not None:
                     if not is_project_port(recipe):
@@ -514,6 +542,7 @@ def snapshot(session):
         "environment": {"pdk": pdk, "dbu_um": session.layout.dbu,
                         "grid_um": session.grid_um},
         "parameters": session.parameters(),
+        "public_parameters": session.public_parameters(),
         "components": sorted(components.values(), key=lambda entry: entry["id"]),
         "instances": sorted(instances, key=lambda entry: entry["id"]),
         "boxes": sorted(boxes, key=lambda entry: entry["id"]),
@@ -527,8 +556,15 @@ def snapshot(session):
 def save_project(session, path):
     """Write beside the destination, flush, then atomically replace it."""
     document = snapshot(session)
+    path = Path(path).resolve()
+    from shapeforge.project_links import PROVIDER, read_tree
+    for entry in document["components"]:
+        if entry["recipe"]["provider"] == PROVIDER:
+            # Validate the destination ancestry too: Save As must not overwrite
+            # a dependency and thereby turn a valid graph into a recursive one.
+            read_tree(entry["recipe"]["source"], (path,))
+            entry["recipe"]["source"] = os.path.relpath(entry["recipe"]["source"], path.parent)
     serialized = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    path = Path(path)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
@@ -571,7 +607,7 @@ class PreparedProject:
         layout.dbu = self.session.layout.dbu
         cell = layout.create_cell(self.session.cell.name)
         cell.copy_tree(self.session.cell)
-        for key in ("shapeforge.parameters", "shapeforge.project", "shapeforge.pdk"):
+        for key in ("shapeforge.parameters", "shapeforge.public_parameters", "shapeforge.project", "shapeforge.pdk"):
             value = self.session.cell.property(key)
             if value is not None:
                 cell.set_property(key, value)
@@ -597,23 +633,29 @@ def _unique_keys(pairs):
 
 
 def prepare_project(path):
-    """Validate, rebuild and regenerate off-screen; no active session is changed."""
+    """Validate the include graph before invoking providers; stage off-screen."""
+    from shapeforge.project_links import read_tree
+    document, _ = read_tree(path)
+    return prepare_document(document, Path(path).resolve())
+
+
+def prepare_document(document, path):
+    from shapeforge.project_links import project_scope
+    with project_scope(path):
+        return _prepare_document(document, path)
+
+
+def _prepare_document(document, path):
     try:
-        with Path(path).open(encoding="utf-8") as handle:
-            document = json.load(handle, parse_constant=_reject_constant, object_pairs_hook=_unique_keys)
         validate_document(document)
-        # Locate all external dependencies before invoking any generator.
-        from shapeforge.external import library_root, source_path
-        for entry in document["components"]:
-            recipe = entry["recipe"]
-            if recipe["provider"] == "external-python":
-                source_path(library_root(recipe["library"], recipe["pdk"]), recipe["file"])
         layout = pya.Layout()
         layout.dbu = document["environment"]["dbu_um"]
         cell = layout.create_cell(document["project"]["name"])
         session = Session(_DetachedCellView(layout), cell, grid_um=document["environment"]["grid_um"])
         cell.set_property("shapeforge.parameters", json.dumps(document["parameters"], allow_nan=False))
         cell.set_property("shapeforge.project", json.dumps(document["project"], allow_nan=False))
+        cell.set_property("shapeforge.public_parameters", json.dumps(document.get("public_parameters", [])))
+        session.project_path = str(path)
         if document["environment"]["pdk"] is not None:
             cell.set_property("shapeforge.pdk", document["environment"]["pdk"])
         warnings, cells = [], {}

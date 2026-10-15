@@ -170,23 +170,29 @@ def reconstruct_component(recipe):
     elif recipe["provider"] == "shapeic-cellkit-technology":
         from shapeforge.technology import generate_technology
         generated = generate_technology(recipe["generator"], recipe["arguments"], recipe["pdk"])
+    elif recipe["provider"] == "shapeforge-project":
+        from shapeforge.project_links import generate_project
+        generated = generate_project(recipe["source"], recipe["overrides"], recipe["pdk"])
     else:
         raise ValueError(f"Unknown component provider: {recipe['provider']}")
     warnings = []
     for key in ("implementation_digest", "technology_digest", "technology_revision",
-                "layout_policy"):
+                "layout_policy", "source_digest", "dependency_digest", "public_parameters"):
         if key in recipe and recipe[key] != generated.recipe.get(key):
-            warnings.append(f"{recipe.get('primitive', recipe.get('function', recipe.get('generator', 'test_block')))}: {key} differs from the saved recipe.")
+            warnings.append(f"{recipe.get('primitive', recipe.get('function', recipe.get('generator', recipe.get('source', 'test_block'))))}: {key} differs from the saved recipe.")
     saved, current = recipe.get("versions", {}), generated.recipe.get("versions", {})
     for package in sorted(set(saved) | set(current)):
         if saved.get(package) != current.get(package):
-            warnings.append(f"{recipe.get('primitive', recipe.get('function', recipe.get('generator', 'test_block')))}: {package} "
+            warnings.append(f"{recipe.get('primitive', recipe.get('function', recipe.get('generator', recipe.get('source', 'test_block'))))}: {package} "
                             f"saved={saved.get(package, 'unavailable')}, installed={current.get(package, 'unavailable')}.")
     return generated, warnings
 
 
 def generate_inputs(recipe, values, parameters):
     """Generate a variant from provider-specific literals and safe bindings."""
+    if recipe["provider"] == "shapeforge-project":
+        from shapeforge.project_links import generate_project
+        return generate_project(recipe["source"], values, recipe["pdk"], parameters)
     if recipe["provider"] == "external-python":
         from shapeforge.external import generate_external
         return generate_external(recipe, values, parameters)
@@ -198,6 +204,8 @@ def generate_inputs(recipe, values, parameters):
 
 
 def input_definition(values, provider):
+    if provider == "shapeforge-project":
+        return {"version": 4, "values": dict(values)}
     from shapeforge.dimensions import width_references
     if width_references(values):
         return {"version": 3, "values": dict(values)}
@@ -209,6 +217,9 @@ def input_definition(values, provider):
 def validate_input_definition(definition, recipe, parameters):
     if not isinstance(definition, dict) or set(definition) != {"version", "values"}:
         raise ValueError("Invalid primitive input definition.")
+    if recipe["provider"] == "shapeforge-project" and type(definition["version"]) is int and definition["version"] == 4:
+        from shapeforge.project_links import resolve_overrides
+        return resolve_overrides(definition["values"], parameters)
     if type(definition["version"]) is int and definition["version"] == 3:
         from shapeforge.dimensions import validate_port_width, is_port_width
         from shapeforge.technology import is_via_stack, resolve_inputs

@@ -1160,12 +1160,82 @@ def insert_test_instance():
             pya.MessageBox.Ok,
         )
 
+def ask_project_arguments(source, previous, session, editing=False):
+    from shapeforge.project_links import interface, project_scope
+    with project_scope(session.project_path):
+        fields = interface(source)
+    names = {name for name, definition, value in fields}
+    values = dict(previous)
+    title = "ShapeForge — Project Parameters"
+    if editing and not fields and not values:
+        pya.MessageBox.info(title,
+            "The linked project has no external parameters in its saved file:\n"
+            f"{source}\n\n"
+            "Open the child project separately. In Parameters, select a parameter, "
+            "check External and click Add / Update. Then use Save Project and retry "
+            "Edit Primitive Parameters on this instance.\n\n"
+            "This editor reads the saved child file; unsaved changes in another view "
+            "are not used.", pya.MessageBox.Ok)
+        return None
+    for name in sorted(set(values) - names):
+        answer = pya.InputDialog.ask_item(title,
+            f"{name} is no longer external. Remove its override?",
+            ["Cancel", "Remove override"], 0)
+        if answer != "Remove override":
+            return None
+        del values[name]
+    for name, definition, default in fields:
+        modes = ["Use child default", "Override (number or parent expression)"]
+        answer = pya.InputDialog.ask_item(title,
+            f"{name}: child default {definition} (currently {default:g} µm)",
+            modes, 1 if name in values else 0)
+        if answer is None:
+            return None
+        if answer == modes[0]:
+            values.pop(name, None)
+            continue
+        value = pya.InputDialog.ask_string(title, f"{name} (µm or parent expression):", str(values.get(name, default)))
+        if value is None:
+            return None
+        values[name] = session.parse_offset(value)
+    return values
+
+
+def insert_project():
+    def execute(session):
+        path = pya.FileDialog.ask_open_file_name("ShapeForge — Insert Project", "", "ShapeForge projects (*.shapeforge.json);;JSON (*.json)")
+        if not path:
+            return
+        values = ask_project_arguments(path, {}, session)
+        if values is not None:
+            session.insert_project(path, values)
+    run_session_action(execute)
+
+
+def relink_project():
+    def execute(session):
+        instance, recipe = session.selected_primitive_instance()
+        if recipe["provider"] != "shapeforge-project":
+            raise ValueError("Select a linked ShapeForge project instance.")
+        path = pya.FileDialog.ask_open_file_name("ShapeForge — Relink Project", recipe["source"], "ShapeForge projects (*.shapeforge.json);;JSON (*.json)")
+        if not path:
+            return
+        raw = instance.property("shapeforge.geometry_parameters")
+        previous = json.loads(raw)["values"] if raw else recipe["overrides"]
+        values = ask_project_arguments(path, previous, session)
+        if values is not None:
+            session.edit_primitive_parameters(values, source=path)
+    run_session_action(execute)
+
+
 def edit_primitive_parameters():
     def execute(session):
         instance, recipe = session.selected_primitive_instance()
         raw = instance.property("shapeforge.geometry_parameters")
         previous = recipe.get("geometry", recipe.get("arguments")) if raw is None else json.loads(raw)["values"]
-        if recipe["provider"] == "external-python":
+        if recipe["provider"] == "shapeforge-project":
+            values = ask_project_arguments(recipe["source"], previous, session, editing=True)
+        elif recipe["provider"] == "external-python":
             values = ask_external_arguments(recipe, previous, session)
         elif recipe["provider"] == "shapeic-cellkit-technology":
             if recipe["generator"] == "via_stack":
@@ -1403,6 +1473,8 @@ def start():
     for name, title, callback in [
         ("save_project", "Save Project...", save_project),
         ("open_project", "Open Project...", open_project),
+        ("insert_project", "Insert ShapeForge Project...", insert_project),
+        ("relink_project", "Relink Project...", relink_project),
         ("add_project_port", "Add Project Port...", add_project_port),
     ]:
         action = pya.Action()
