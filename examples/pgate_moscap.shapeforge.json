@@ -1,0 +1,202 @@
+{
+  "boxes": [],
+  "components": [
+    {
+      "id": "50814286-5d8e-40e9-8458-448fcad1153b",
+      "recipe": {
+        "arguments": {
+          "height": 50.0,
+          "leftColW": 2.0,
+          "minBottomRowW": 1.0,
+          "minTopRowW": 1.0,
+          "rightColW": 1.0,
+          "sep": 0.3,
+          "strapsW": 0.3,
+          "width": 8.5
+        },
+        "dependency_digest": "3675e71c4c0382643095333d20031f05d00ad0448e7caea199c194ab303decfb",
+        "overrides": {
+          "height": 50.0,
+          "leftColW": 2.0,
+          "minBottomRowW": 1.0,
+          "minTopRowW": 1.0,
+          "rightColW": 1.0,
+          "sep": 0.3,
+          "strapsW": 0.3,
+          "width": 8.5
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeforge-project",
+        "public_parameters": [
+          "width",
+          "strapsW",
+          "sep",
+          "rightColW",
+          "leftColW",
+          "minTopRowW",
+          "minBottomRowW",
+          "height"
+        ],
+        "source": "moscap.shapeforge.json",
+        "source_digest": "534c6f07a49487e83e94cdbe4e3d00b4b0357d67007ab7011f6364109e69535f",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "90bec5e2-2d5c-4545-a515-fd0ac9ee6a07",
+      "recipe": {
+        "arguments": {
+          "height": 50.0,
+          "leftColW": 1.0,
+          "minBottomRowW": 1.0,
+          "minTopRowW": 1.0,
+          "rightColW": 2.0,
+          "sep": 0.3,
+          "strapsW": 0.3,
+          "width": 8.5
+        },
+        "dependency_digest": "3675e71c4c0382643095333d20031f05d00ad0448e7caea199c194ab303decfb",
+        "overrides": {
+          "height": 50.0,
+          "leftColW": 1.0,
+          "minBottomRowW": 1.0,
+          "minTopRowW": 1.0,
+          "rightColW": 2.0,
+          "sep": 0.3,
+          "strapsW": 0.3,
+          "width": 8.5
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeforge-project",
+        "public_parameters": [
+          "width",
+          "strapsW",
+          "sep",
+          "rightColW",
+          "leftColW",
+          "minTopRowW",
+          "minBottomRowW",
+          "height"
+        ],
+        "source": "moscap.shapeforge.json",
+        "source_digest": "534c6f07a49487e83e94cdbe4e3d00b4b0357d67007ab7011f6364109e69535f",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    }
+  ],
+  "environment": {
+    "dbu_um": 0.001,
+    "grid_um": 0.005,
+    "pdk": "ihp-sg13g2"
+  },
+  "format": "shapeforge",
+  "instances": [
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "90bec5e2-2d5c-4545-a515-fd0ac9ee6a07",
+      "geometry_parameters": {
+        "values": {
+          "height": "height",
+          "leftColW": "leftColW",
+          "minBottomRowW": "minBottomRowW",
+          "minTopRowW": "minTopRowW",
+          "rightColW": "rightColW_0",
+          "sep": "sep",
+          "strapsW": "strapsW",
+          "width": "width/2"
+        },
+        "version": 4
+      },
+      "id": "07025a01-10fc-4fb0-ab08-a6dd392a9b27",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 0.0,
+        "y_um": 0.0
+      },
+      "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "50814286-5d8e-40e9-8458-448fcad1153b",
+      "geometry_parameters": {
+        "values": {
+          "height": "height",
+          "leftColW": "leftColW_1",
+          "minBottomRowW": "minBottomRowW",
+          "minTopRowW": "minTopRowW",
+          "rightColW": "rightColW",
+          "sep": "sep",
+          "strapsW": "strapsW",
+          "width": "width/2"
+        },
+        "version": 4
+      },
+      "id": "81f3456d-7dc7-48c6-af6c-d059bbbcb785",
+      "placement": {
+        "alignment": "center",
+        "direction": "right",
+        "dx_um": 0.0,
+        "dy_um": 0.0,
+        "kind": "edges",
+        "reference_id": "07025a01-10fc-4fb0-ab08-a6dd392a9b27",
+        "reference_port": null,
+        "target_port": null,
+        "version": 1
+      },
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 8.5,
+        "y_um": 0.0
+      },
+      "via_center": null
+    }
+  ],
+  "parameters": {
+    "centerW": 4.0,
+    "height": 50.0,
+    "leftColW": 1.0,
+    "leftColW_1": "centerW/2",
+    "minBottomRowW": 1.0,
+    "minTopRowW": 1.0,
+    "rightColW": 1.0,
+    "rightColW_0": "centerW/2",
+    "sep": 0.3,
+    "strapsW": 0.3,
+    "width": 17.0
+  },
+  "project": {
+    "description": "",
+    "name": "my_pcell"
+  },
+  "public_parameters": [
+    "width",
+    "strapsW",
+    "sep",
+    "rightColW",
+    "minTopRowW",
+    "minBottomRowW",
+    "leftColW",
+    "height",
+    "centerW"
+  ],
+  "version": 12
+}
