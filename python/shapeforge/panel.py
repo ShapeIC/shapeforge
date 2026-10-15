@@ -48,11 +48,8 @@ class ShapeForgePanel:
         self.summary.textFormat = pya.Qt.PlainText
         layout.addWidget(self.summary)
         self.buttons = {}
-        for name, title in ACTION_TITLES.items():
-            button = pya.QPushButton(title, content)
-            button.clicked = lambda *args, action=name: self.execute(action)
-            layout.addWidget(button)
-            self.buttons[name] = button
+        from shapeforge.selection_inspector import SelectionInspector
+        self.inspector = SelectionInspector(self, content, layout)
         layout.addStretch(1)
         self.selection.widget = content
         self.tabs.addTab(self.selection, "Selection")
@@ -79,13 +76,16 @@ class ShapeForgePanel:
             except Exception:
                 pass  # Closed sessions are already represented by their context.
         self.context = context
+        self.inspector.refresh(session, context)
         if context == self.signature:
             return
         self.signature = context
         if context["key"] is not None and context["key"] != self.selection_key:
             self.tabs.currentIndex = 1
         self.selection_key = context["key"]
-        self.summary.text = context["summary"]
+        self.summary.text = "\n".join(context["summary"].splitlines()[:3])
+        if self.inspector.current is not None:
+            self.summary.text += "\n" + self.inspector.current["name"]
         for name, button in self.buttons.items():
             present = name in context["actions"]
             reason = context["actions"].get(name)

@@ -321,7 +321,8 @@ class Session:
             component_id = self.component_id_for_instance(instance)
             recipe = (recipe_replacements or {}).get(object_id, self.component_recipes.get(component_id))
             if replacement is not None:
-                definition = input_definition(replacement, recipe["provider"]) or {"version": 2, "values": replacement}
+                definition = input_definition(replacement, recipe["provider"]) or {
+                    "version": 1 if recipe["provider"] == "shapeic-cellkit" else 2, "values": replacement}
             if definition is not None:
                 if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology", "shapeforge-project"):
                     raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")

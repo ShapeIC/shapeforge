@@ -705,7 +705,11 @@ def _prepare_document(document, path):
                 instance.set_property("shapeforge.placement", json.dumps(entry["placement"], allow_nan=False))
         for entry in document["boxes"]:
             info = entry["layer"]
-            layer = layout.layer(pya.LayerInfo(info["layer"], info["datatype"], info["name"]))
+            layer_info = pya.LayerInfo(info["layer"], info["datatype"], info["name"])
+            layer = layout.layer(layer_info)
+            # copy_tree can import PDK layer names even for unused layers.
+            # Box layer metadata explicitly saved by the project is authoritative.
+            layout.set_info(layer, layer_info)
             shape = cell.shapes(layer).insert(pya.Box(*entry["box_dbu"]))
             shape.set_property("shapeforge.object_id", entry["id"])
             shape.set_property("shapeforge.box", json.dumps(entry["definition"], allow_nan=False))
