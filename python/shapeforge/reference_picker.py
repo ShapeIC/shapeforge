@@ -1,4 +1,4 @@
-"""Nonmodal reference selection using KLayout's ordinary object selection."""
+"""Nonmodal reference selection with explicit disambiguation of overlapping objects."""
 
 from dataclasses import dataclass
 
@@ -13,10 +13,10 @@ class ReferenceRequest:
 
 
 class ReferencePicker:
-    """Wait for one eligible selection, restore the destination, then continue.
+    """Capture clicks, choose a valid hit, restore the destination and continue.
 
-    A short Qt timer observes selection without replacing KLayout event handlers.
-    No nested event loop, hit testing, layout edits, or undo transaction is needed.
+    The timer checks session health and processes queued clicks outside native
+    mouse callbacks. Native selection remains available for non-GUI test views.
     """
 
     def __init__(self, session, request, completed, session_getter, main_window):
@@ -36,6 +36,12 @@ class ReferencePicker:
         self.mode = None
         self.dialog = self.timer = self.shortcut = None
         self.finished = False
+        self.click_source = None
+        self.pending_click = None
+        self.choice_dialog = None
+        self.choice_point = None
+        self.choice_ids = ()
+        self.choice_buttons = {}
 
     def start(self):
         try:
@@ -59,6 +65,8 @@ class ReferencePicker:
             self.mode = self.view.mode_name()
             self.view.switch_mode("select")
             self.view.object_selection = []
+            from shapeforge.reference_clicks import attach
+            self.click_source = attach(self)
             self.dialog.show()
             self.timer.start(100)
         except Exception:
@@ -86,6 +94,12 @@ class ReferencePicker:
             self.finish(None)
             pya.MessageBox.warning("ShapeForge — Select Reference", str(error), pya.MessageBox.Ok)
             return
+        if self.pending_click is not None:
+            point, self.pending_click = self.pending_click, None
+            self.handle_click(point, objects)
+            return
+        if self.click_source is not None or self.choice_dialog is not None:
+            return
         selection = list(self.view.object_selection)
         if not selection:
             return
@@ -99,6 +113,121 @@ class ReferencePicker:
             self.label.text = self.request.prompt + "\n" + str(error) + "\nSelect another object, or press Escape to cancel."
             return
         self.finish(item["id"])
+
+    def queue_click(self, point):
+        if not self.finished:
+            # Keep an independent value; event argument wrappers are temporary.
+            self.pending_click = pya.DPoint(point.x, point.y)
+
+    def hit_ids(self, point, objects):
+        # Plugin positions are micron coordinates in the displayed context cell.
+        # Convert to the session cell when it is shown through a hierarchy path.
+        context = getattr(self.session.cellview, "context_dtrans", None)
+        context = context() if callable(context) else context or pya.DCplxTrans()
+        point = context.inverted() * point
+        tolerance = 0.0
+        if hasattr(self.view, "viewport_trans"):
+            scale = abs(self.view.viewport_trans().mag) * abs(context.mag)
+            if scale:
+                tolerance = 2.0 / scale
+        result = []
+        for identity in self.request.candidate_ids:
+            item = objects.get(identity)
+            if item is None:
+                continue
+            if item["type"] == "instance":
+                instance = item["instance"]
+                if instance.is_regular_array() or instance.size() != 1:
+                    continue
+                transform = instance.dcplx_trans
+                if not transform.mag:
+                    continue
+                bounds = self.session.layout.cell(instance.cell_index).dbbox()
+                local = transform.inverted() * point
+                margin = tolerance / abs(transform.mag)
+            else:
+                bounds = item["shape"].box.to_dtype(self.session.layout.dbu)
+                local, margin = point, tolerance
+            if not bounds.empty() and bounds.enlarged(margin).contains(local):
+                result.append(identity)
+        return sorted(set(result))
+
+    def describe_hit(self, item):
+        identity = item["id"]
+        if item["type"] == "box":
+            layer = self.session.layout.get_info(item["layer"])
+            name = f"Box · {layer.layer}/{layer.datatype}"
+            bounds = item["shape"].box.to_dtype(self.session.layout.dbu)
+        else:
+            recipe = item.get("recipe") or {}
+            name = recipe.get("primitive", recipe.get("function", recipe.get("generator", item["name"])))
+            if recipe.get("provider") == "shapeforge-project":
+                from pathlib import Path
+                name = Path(recipe["source"]).name
+            bounds = item["instance"].dbbox()
+        short_id = identity[:8]
+        if any(other != identity and other.startswith(short_id) for other in self.choice_ids):
+            short_id = identity
+        return f"{name} · {bounds.width():g} × {bounds.height():g} µm [{short_id}]"
+
+    def handle_click(self, point, objects):
+        try:
+            self.close_choices()
+            hits = self.hit_ids(point, objects)
+            if len(hits) == 1:
+                self.finish(hits[0])
+            elif hits:
+                self.choice_point = point
+                self.choice_ids = tuple(hits)
+                self.choice_dialog = pya.QDialog(self.main_window)
+                self.choice_dialog.windowTitle = "ShapeForge — Choose Reference"
+                self.choice_dialog.modal = False
+                layout = pya.QVBoxLayout(self.choice_dialog)
+                layout.addWidget(pya.QLabel("Objects at this point:", self.choice_dialog))
+                for identity in hits:
+                    button = pya.QPushButton(self.describe_hit(objects[identity]), self.choice_dialog)
+                    self.choice_buttons[identity] = button
+                    button.toolTip = "ShapeForge ID: " + identity
+                    button.clicked = lambda *args, identity=identity: self.choose(identity)
+                    layout.addWidget(button)
+                cancel = pya.QPushButton("Cancel", self.choice_dialog)
+                cancel.clicked = self.cancel
+                layout.addWidget(cancel)
+                self.choice_dialog.rejected = self.cancel
+                self.choice_dialog.show()
+            else:
+                self.label.text = self.request.prompt + "\nNo eligible reference at this point. Click another object, or press Escape to cancel."
+        except Exception as error:
+            self.close_choices()
+            self.label.text = self.request.prompt + "\n" + str(error) + "\nClick another reference, or press Escape to cancel."
+
+    def choose(self, identity):
+        if self.finished:
+            return
+        try:
+            self.session.validate()
+            if (self.session_getter() is not self.session or self.main_window.current_view() != self.view
+                    or self.session.cellview.cell != self.session.cell):
+                self.finish(None)
+                return
+            objects = self.session.placement_objects(raw=True)
+            if any(required not in objects for required in self.request.required_ids):
+                self.finish(None)
+                return
+            if identity not in self.choice_ids or identity not in self.hit_ids(self.choice_point, objects):
+                raise RuntimeError("This reference moved or was removed. Click another object.")
+        except Exception as error:
+            self.close_choices()
+            self.label.text = self.request.prompt + "\n" + str(error)
+            return
+        self.finish(identity)
+
+    def close_choices(self):
+        if self.choice_dialog is not None:
+            self.choice_dialog.hide()
+            self.choice_dialog.deleteLater()
+        self.choice_dialog, self.choice_point, self.choice_ids = None, None, ()
+        self.choice_buttons = {}
 
     def cancel(self, *args):
         self.finish(None)
@@ -131,6 +260,15 @@ class ReferencePicker:
         if self.finished:
             return
         self.finished = True
+        self.pending_click = None
+        self.close_choices()
+        from shapeforge.reference_clicks import detach
+        try:
+            detach(self.click_source)
+        except RuntimeError:
+            pass  # A closed view may have already destroyed its native plugin.
+        finally:
+            self.click_source = None
         if self.timer is not None:
             self.timer.stop()
         if self.shortcut is not None:

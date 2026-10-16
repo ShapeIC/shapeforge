@@ -1464,6 +1464,8 @@ def box_info():
 
 def start():
     mw = pya.Application.instance().main_window()
+    from shapeforge.reference_clicks import ensure_factory
+    ensure_factory()
     try:
         load_external_libraries()
     except Exception as error:
