@@ -478,6 +478,36 @@
   ],
   "components": [
     {
+      "id": "3bfddc21-455c-4c36-a113-dbba3b042de0",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal3",
+          "height": 0.3,
+          "top_layer": "Metal4",
+          "width": 5.44
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
       "id": "3fed7f16-1170-42db-a9f9-de781967fec3",
       "recipe": {
         "arguments": {
@@ -498,53 +528,6 @@
         },
         "pdk": "ihp-sg13g2",
         "provider": "external-python",
-        "versions": {
-          "gdsfactory": "9.45.0",
-          "ihp-gdsfactory": "2.0.0",
-          "kfactory": "2.6.1",
-          "shapeic-cellkit": "0.1.0"
-        }
-      }
-    },
-    {
-      "id": "48273c18-1668-4deb-8542-320f96e0cdfa",
-      "recipe": {
-        "arguments": {
-          "centerW": 1.0,
-          "height": 185.26999999999998,
-          "leftColW": 1.26,
-          "minBottomRowW": 1.0,
-          "minTopRowW": 1.0,
-          "rightColW": 1.26,
-          "sep": 0.3,
-          "strapsW": 0.3,
-          "width": 17.0
-        },
-        "dependency_digest": "57413ccabded5cc9cb578a13ee65404af511cc3fd97862c4dd938de5057d3cd5",
-        "overrides": {
-          "centerW": 1.0,
-          "height": 185.26999999999998,
-          "leftColW": 1.26,
-          "rightColW": 1.26,
-          "sep": 0.3,
-          "strapsW": 0.3,
-          "width": 17.0
-        },
-        "pdk": "ihp-sg13g2",
-        "provider": "shapeforge-project",
-        "public_parameters": [
-          "width",
-          "strapsW",
-          "sep",
-          "rightColW",
-          "minTopRowW",
-          "minBottomRowW",
-          "leftColW",
-          "height",
-          "centerW"
-        ],
-        "source": "pgate_moscap.shapeforge.json",
-        "source_digest": "d7c426f7735c30acf721f32cd4bdce25cf5eab33cc0c5c55885c803f933e2fdd",
         "versions": {
           "gdsfactory": "9.45.0",
           "ihp-gdsfactory": "2.0.0",
@@ -581,11 +564,59 @@
       }
     },
     {
-      "id": "8f370a13-9c5a-418b-bd19-9daa38c6c1a5",
+      "id": "8c450e49-d0f4-4375-bcf6-b312a4896e31",
+      "recipe": {
+        "arguments": {
+          "centerW": 1.0,
+          "height": 186.75000000000003,
+          "leftColW": 1.26,
+          "minBottomRowW": 1.44,
+          "minTopRowW": 1.0,
+          "rightColW": 1.26,
+          "sep": 0.3,
+          "strapsW": 0.3,
+          "width": 17.0
+        },
+        "dependency_digest": "d4184af6ba32a5f9c03094d295bfda3f6dd7990a0842a6b10357a890fa96215d",
+        "overrides": {
+          "centerW": 1.0,
+          "height": 186.75000000000003,
+          "leftColW": 1.26,
+          "minBottomRowW": 1.44,
+          "rightColW": 1.26,
+          "sep": 0.3,
+          "strapsW": 0.3,
+          "width": 17.0
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeforge-project",
+        "public_parameters": [
+          "width",
+          "strapsW",
+          "sep",
+          "rightColW",
+          "minTopRowW",
+          "minBottomRowW",
+          "leftColW",
+          "height",
+          "centerW"
+        ],
+        "source": "pgate_moscap.shapeforge.json",
+        "source_digest": "4aa8e2fcf9c31753561f81068dbc48d8934b59b650b639c3070b5692be0a017a",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "d3a2237f-ae7a-41ec-b6b0-62788bf13ef3",
       "recipe": {
         "arguments": {
           "bottom_layer": "Metal3",
-          "height": 10.0,
+          "height": 186.75,
           "top_layer": "Metal4",
           "width": 1.0
         },
@@ -650,11 +681,13 @@
     {
       "array": null,
       "array_member": null,
-      "component_id": "8f370a13-9c5a-418b-bd19-9daa38c6c1a5",
+      "component_id": "d3a2237f-ae7a-41ec-b6b0-62788bf13ef3",
       "geometry_parameters": {
         "values": {
           "bottom_layer": "Metal3",
-          "height": 10.0,
+          "height": {
+            "expression": "powerPmosActualH"
+          },
           "top_layer": "Metal4",
           "width": {
             "expression": "moscapCenterW"
@@ -669,10 +702,20 @@
         "angle": 0.0,
         "mag": 1.0,
         "mirror": false,
-        "x_um": 27.6,
-        "y_um": -150.3
+        "x_um": 8.5,
+        "y_um": -65.235
       },
-      "via_center": null
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "center",
+          "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+        },
+        "y_center": {
+          "anchor": "center",
+          "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+        }
+      }
     },
     {
       "array": null,
@@ -791,12 +834,54 @@
     {
       "array": null,
       "array_member": null,
-      "component_id": "48273c18-1668-4deb-8542-320f96e0cdfa",
+      "component_id": "3bfddc21-455c-4c36-a113-dbba3b042de0",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal3",
+          "height": {
+            "expression": "moscapStrapsW"
+          },
+          "top_layer": "Metal4",
+          "width": {
+            "expression": "vpwrW-moscapLateralColW-moscapSep"
+          }
+        },
+        "version": 2
+      },
+      "id": "733f85ad-19d0-44d5-8704-db0f74f815c5",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 4.28,
+        "y_um": -156.435
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "left",
+          "offset_um": "moscapLateralColW+moscapSep+(vpwrW-moscapLateralColW-moscapSep)/2",
+          "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "bottom_0",
+          "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+        }
+      }
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "8c450e49-d0f4-4375-bcf6-b312a4896e31",
       "geometry_parameters": {
         "values": {
           "centerW": "moscapCenterW",
-          "height": "powerPmosEffH",
+          "height": "powerPmosActualH",
           "leftColW": "moscapLateralColW",
+          "minBottomRowW": "moscapMinBottomRowW",
           "rightColW": "moscapLateralColW",
           "sep": "moscapSep",
           "strapsW": "moscapStrapsW",
@@ -845,12 +930,13 @@
     "moscapCenterW": 1.0,
     "moscapH": 20.0,
     "moscapLateralColW": 1.26,
+    "moscapMinBottomRowW": 1.44,
     "moscapSep": 0.3,
     "moscapStrapsW": 0.3,
-    "powerPmosActualW": {
+    "powerPmosActualH": {
       "kind": "geometry_measure",
       "quantity": "height",
-      "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba",
+      "reference_id": "37dbb115-c8e2-478b-afb0-279a1df273b6",
       "version": 1
     },
     "powerPmosEffH": "powerPmosH-2.22",

@@ -14,7 +14,7 @@
           "strapsW": 0.3,
           "width": 8.5
         },
-        "dependency_digest": "3675e71c4c0382643095333d20031f05d00ad0448e7caea199c194ab303decfb",
+        "dependency_digest": "951b14595e89bdb4e5b246f78130c2cb1789f109304aef37edfbb55567300919",
         "overrides": {
           "height": 50.0,
           "leftColW": 2.0,
@@ -38,7 +38,39 @@
           "height"
         ],
         "source": "moscap.shapeforge.json",
-        "source_digest": "534c6f07a49487e83e94cdbe4e3d00b4b0357d67007ab7011f6364109e69535f",
+        "source_digest": "b5c197edaf5d787844af5af9afc5cb7948fdbded07e10d4fcfe8c94aadbd217b",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "70a4e97c-587b-493d-9443-4e98a14b0833",
+      "recipe": {
+        "arguments": {
+          "length": 0.3,
+          "pinLayer": "Metal3pin",
+          "pinName": "bottom_1",
+          "pinTextLayer": "",
+          "width": 4.9
+        },
+        "generator": "project_port",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "length": "float",
+          "pinLayer": "str",
+          "pinName": "str",
+          "pinTextLayer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
         "versions": {
           "gdsfactory": "9.45.0",
           "ihp-gdsfactory": "2.0.0",
@@ -60,7 +92,7 @@
           "strapsW": 0.3,
           "width": 8.5
         },
-        "dependency_digest": "3675e71c4c0382643095333d20031f05d00ad0448e7caea199c194ab303decfb",
+        "dependency_digest": "951b14595e89bdb4e5b246f78130c2cb1789f109304aef37edfbb55567300919",
         "overrides": {
           "height": 50.0,
           "leftColW": 1.0,
@@ -84,7 +116,39 @@
           "height"
         ],
         "source": "moscap.shapeforge.json",
-        "source_digest": "534c6f07a49487e83e94cdbe4e3d00b4b0357d67007ab7011f6364109e69535f",
+        "source_digest": "b5c197edaf5d787844af5af9afc5cb7948fdbded07e10d4fcfe8c94aadbd217b",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "bd66a841-fb96-4e74-9320-464348cdc844",
+      "recipe": {
+        "arguments": {
+          "length": 0.3,
+          "pinLayer": "Metal3pin",
+          "pinName": "bottom_0",
+          "pinTextLayer": "",
+          "width": 4.9
+        },
+        "generator": "project_port",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "length": "float",
+          "pinLayer": "str",
+          "pinName": "str",
+          "pinTextLayer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
         "versions": {
           "gdsfactory": "9.45.0",
           "ihp-gdsfactory": "2.0.0",
@@ -133,6 +197,50 @@
     {
       "array": null,
       "array_member": null,
+      "component_id": "bd66a841-fb96-4e74-9320-464348cdc844",
+      "geometry_parameters": {
+        "values": {
+          "length": {
+            "expression": "strapsW"
+          },
+          "pinLayer": "Metal3pin",
+          "pinName": "bottom_0",
+          "pinTextLayer": "",
+          "width": {
+            "expression": "portsize"
+          }
+        },
+        "version": 2
+      },
+      "id": "43468420-2d51-4e5f-9060-38a1ff1de39d",
+      "placement": null,
+      "port_position": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "offset_um": 0.0,
+          "port": "BOTTOM",
+          "reference_id": "07025a01-10fc-4fb0-ab08-a6dd392a9b27"
+        },
+        "y_center": {
+          "anchor": "port",
+          "offset_um": 0.0,
+          "port": "BOTTOM",
+          "reference_id": "07025a01-10fc-4fb0-ab08-a6dd392a9b27"
+        }
+      },
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 3.75,
+        "y_um": 1.6
+      },
+      "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
       "component_id": "50814286-5d8e-40e9-8458-448fcad1153b",
       "geometry_parameters": {
         "values": {
@@ -168,6 +276,50 @@
         "y_um": 0.0
       },
       "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "70a4e97c-587b-493d-9443-4e98a14b0833",
+      "geometry_parameters": {
+        "values": {
+          "length": {
+            "expression": "strapsW"
+          },
+          "pinLayer": "Metal3pin",
+          "pinName": "bottom_1",
+          "pinTextLayer": "",
+          "width": {
+            "expression": "portsize"
+          }
+        },
+        "version": 2
+      },
+      "id": "9b88972f-345d-449a-b2ee-b587758cdb95",
+      "placement": null,
+      "port_position": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "offset_um": 0.0,
+          "port": "BOTTOM",
+          "reference_id": "81f3456d-7dc7-48c6-af6c-d059bbbcb785"
+        },
+        "y_center": {
+          "anchor": "port",
+          "offset_um": 0.0,
+          "port": "BOTTOM",
+          "reference_id": "81f3456d-7dc7-48c6-af6c-d059bbbcb785"
+        }
+      },
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 13.25,
+        "y_um": 1.6
+      },
+      "via_center": null
     }
   ],
   "parameters": {
@@ -177,6 +329,13 @@
     "leftColW_1": "centerW/2",
     "minBottomRowW": 1.0,
     "minTopRowW": 1.0,
+    "portsize": {
+      "kind": "geometry_measure",
+      "port": "BOTTOM",
+      "quantity": "port_width",
+      "reference_id": "07025a01-10fc-4fb0-ab08-a6dd392a9b27",
+      "version": 1
+    },
     "rightColW": 1.0,
     "rightColW_0": "centerW/2",
     "sep": 0.3,
