@@ -728,6 +728,16 @@ def link_parameter_dimension(name, completed=None):
     return run_session_action(execute)
 
 
+def select_instance_box():
+    def execute(session):
+        from shapeforge.reference_picker import ReferenceRequest
+        session.validate()
+        if session.cellview.cell != session.cell:
+            raise ValueError("Activate the ShapeForge working cell.")
+        yield ReferenceRequest((), "Select an instance or box to inspect or edit.", select_object=True)
+    return run_session_action(execute)
+
+
 def pick_reference(session, candidates, prompt, required_ids=()):
     from shapeforge.reference_picker import ReferenceRequest
     identity = yield ReferenceRequest(tuple(item["id"] for item in candidates), prompt, tuple(required_ids))
@@ -756,7 +766,7 @@ class _DialogFlow:
             pya.MessageBox.warning("ShapeForge", str(error), pya.MessageBox.Ok)
             return
         try:
-            from shapeforge.reference_picker import ReferencePicker
+            from shapeforge.reference_picker import ReferencePicker, ObjectPicker
             _active_flow = self
             window = pya.Application.instance().main_window()
             if not self.previous_actions:
@@ -765,7 +775,8 @@ class _DialogFlow:
                     action.enabled = False
             if _parameter_panel is not None and not _parameter_panel.dock._destroyed():
                 _parameter_panel.set_reference_picking(True)
-            self.picker = ReferencePicker(self.session, request, self.selected, lambda: _session, window)
+            picker_type = ObjectPicker if request.select_object else ReferencePicker
+            self.picker = picker_type(self.session, request, self.selected, lambda: _session, window)
             self.picker.start()
         except Exception as error:
             self.finish()

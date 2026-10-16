@@ -10,6 +10,11 @@ def selection_context(session):
             raise ValueError("Create or open a ShapeForge project.")
         session.validate()
         selected = list(session.cellview.view().object_selection)
+        if not selected:
+            if session.cellview.cell != session.cell:
+                raise ValueError("Activate the ShapeForge working cell.")
+            result["actions"]["select_instance_box"] = None
+            return result
         if len(selected) != 1:
             raise ValueError("Select exactly one box or instance.")
         obj = selected[0]

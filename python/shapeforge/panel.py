@@ -6,6 +6,7 @@ from shapeforge.selection import selection_context
 from shapeforge.ports_panel import PortsEditor
 
 ACTION_TITLES = {
+    "select_instance_box": "Select Instance / Box…",
     "create_array": "Create Array…", "edit_array": "Edit Array…", "dissolve_array": "Dissolve Array",
     "edit_project_port": "Edit Project Port…", "delete_project_port": "Delete Project Port",
     "make_box_parametric": "Make Box Parametric…",
@@ -48,6 +49,10 @@ class ShapeForgePanel:
         self.summary.textFormat = pya.Qt.PlainText
         layout.addWidget(self.summary)
         self.buttons = {}
+        button = pya.QPushButton(ACTION_TITLES["select_instance_box"], content)
+        button.clicked = lambda *args: self.execute("select_instance_box")
+        self.buttons["select_instance_box"] = button
+        layout.addWidget(button)
         from shapeforge.selection_inspector import SelectionInspector
         self.inspector = SelectionInspector(self, content, layout)
         layout.addStretch(1)

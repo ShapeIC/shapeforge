@@ -1,6 +1,6 @@
 """Nonmodal reference selection with explicit disambiguation of overlapping objects."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pya
 
@@ -10,6 +10,7 @@ class ReferenceRequest:
     candidate_ids: tuple
     prompt: str
     required_ids: tuple = ()
+    select_object: bool = False
 
 
 class ReferencePicker:
@@ -25,7 +26,7 @@ class ReferencePicker:
         self.main_window = main_window
         self.view = session.cellview.view()
         self.saved_selection = list(self.view.object_selection)
-        objects = session.placement_objects(raw=True)
+        objects = self.objects()
         self.saved_ids = []
         for obj in self.saved_selection:
             try:
@@ -43,13 +44,20 @@ class ReferencePicker:
         self.choice_ids = ()
         self.choice_buttons = {}
 
+    def objects(self):
+        return self.session.placement_objects(raw=True)
+
+    def selected_item(self, obj, objects):
+        return self.session.selected_placement_object(obj, objects)
+
     def start(self):
         try:
             self.dialog = pya.QDialog(self.main_window)
-            self.dialog.windowTitle = "ShapeForge — Select Reference"
+            self.dialog.windowTitle = "ShapeForge — Select Object" if self.request.select_object else "ShapeForge — Select Reference"
             self.dialog.modal = False
             layout = pya.QVBoxLayout(self.dialog)
-            self.label = pya.QLabel(self.request.prompt + "\nClick one reference object in the layout. Escape cancels.", self.dialog)
+            noun = "object" if self.request.select_object else "reference object"
+            self.label = pya.QLabel(self.request.prompt + f"\nClick one {noun} in the layout. Escape cancels.", self.dialog)
             self.label.wordWrap = True
             layout.addWidget(self.label)
             cancel = pya.QPushButton("Cancel", self.dialog)
@@ -87,7 +95,7 @@ class ReferencePicker:
             if self.session.cellview.cell != self.session.cell:
                 self.finish(None)
                 return
-            objects = self.session.placement_objects(raw=True)
+            objects = self.objects()
             if any(identity not in objects for identity in self.request.required_ids):
                 raise RuntimeError("The destination or an original selected object was removed. Retry the action.")
         except Exception as error:
@@ -106,7 +114,7 @@ class ReferencePicker:
         try:
             if len(selection) != 1 or selection[0].cv_index != self.session.cellview.index():
                 raise RuntimeError("Select exactly one reference in the working cell.")
-            item = self.session.selected_placement_object(selection[0], objects)
+            item = self.selected_item(selection[0], objects)
             if item["id"] not in self.request.candidate_ids:
                 raise RuntimeError("This object cannot be used as the reference for this operation.")
         except Exception as error:
@@ -138,6 +146,8 @@ class ReferencePicker:
             if item["type"] == "instance":
                 instance = item["instance"]
                 if instance.is_regular_array() or instance.size() != 1:
+                    if self.request.select_object and instance.dbbox().enlarged(tolerance).contains(point):
+                        result.append(identity)
                     continue
                 transform = instance.dcplx_trans
                 if not transform.mag:
@@ -180,14 +190,14 @@ class ReferencePicker:
                 self.choice_point = point
                 self.choice_ids = tuple(hits)
                 self.choice_dialog = pya.QDialog(self.main_window)
-                self.choice_dialog.windowTitle = "ShapeForge — Choose Reference"
+                self.choice_dialog.windowTitle = "ShapeForge — Choose Object" if self.request.select_object else "ShapeForge — Choose Reference"
                 self.choice_dialog.modal = False
                 layout = pya.QVBoxLayout(self.choice_dialog)
                 layout.addWidget(pya.QLabel("Objects at this point:", self.choice_dialog))
                 for identity in hits:
                     button = pya.QPushButton(self.describe_hit(objects[identity]), self.choice_dialog)
                     self.choice_buttons[identity] = button
-                    button.toolTip = "ShapeForge ID: " + identity
+                    button.toolTip = ("Selection candidate: " if self.request.select_object else "ShapeForge ID: ") + identity
                     button.clicked = lambda *args, identity=identity: self.choose(identity)
                     layout.addWidget(button)
                 cancel = pya.QPushButton("Cancel", self.choice_dialog)
@@ -210,7 +220,7 @@ class ReferencePicker:
                     or self.session.cellview.cell != self.session.cell):
                 self.finish(None)
                 return
-            objects = self.session.placement_objects(raw=True)
+            objects = self.objects()
             if any(required not in objects for required in self.request.required_ids):
                 self.finish(None)
                 return
@@ -289,3 +299,72 @@ class ReferencePicker:
             self.dialog.deleteLater()
         if notify:
             self.completed(identity)
+
+
+class ObjectPicker(ReferencePicker):
+    """Select direct native objects without requiring or changing persistent IDs."""
+
+    def __init__(self, session, request, *args):
+        self.candidates = self.scan(session)
+        self.selected_identity = None
+        request = replace(request, candidate_ids=tuple(self.candidates), select_object=True)
+        super().__init__(session, request, *args)
+
+    @staticmethod
+    def scan(session):
+        items = []
+        for instance in session.cell.each_inst():
+            items.append(dict(type="instance", instance=instance,
+                              name=session.layout.cell(instance.cell_index).name))
+        for layer in session.layout.layer_indexes():
+            for shape in session.cell.shapes(layer).each():
+                if shape.is_box():
+                    items.append(dict(type="box", shape=shape, layer=layer))
+        return {str(index + 1): dict(item, id=str(index + 1)) for index, item in enumerate(items)}
+
+    def objects(self):
+        # Tokens belong to native objects, not IDs that copies may share. Match
+        # fresh wrappers so deleting a candidate never selects its replacement.
+        current = self.scan(self.session)
+        result = {}
+        for identity, item in self.candidates.items():
+            key = "instance" if item["type"] == "instance" else "shape"
+            try:
+                if any(other["type"] == item["type"] and other[key] == item[key]
+                       for other in current.values()):
+                    result[identity] = item
+            except RuntimeError:
+                continue
+        return result
+
+    def selected_item(self, obj, objects):
+        if obj.top != self.session.cell.cell_index() or len(obj.path) != (1 if obj.is_cell_inst() else 0):
+            raise RuntimeError("Select a direct box or instance in the working cell.")
+        for item in objects.values():
+            if item["type"] == "instance" and obj.is_cell_inst() and obj.inst() == item["instance"]:
+                return item
+            if item["type"] == "box" and not obj.is_cell_inst() and obj.shape == item["shape"]:
+                return item
+        raise RuntimeError("Select a box or instance in the working cell.")
+
+    def restore_selection(self):
+        self.session.validate()
+        if self.session.cellview.cell != self.session.cell:
+            return
+        if self.selected_identity is None:
+            self.view.object_selection = self.saved_selection
+            return
+        item = self.objects().get(self.selected_identity)
+        if item is None:
+            raise RuntimeError("The selected object was removed. Retry selection.")
+        path = pya.ObjectInstPath()
+        path.cv_index, path.top = self.session.cellview.index(), self.session.cell.cell_index()
+        if item["type"] == "instance":
+            path.append_path(pya.InstElement(item["instance"]))
+        else:
+            path.layer, path.shape = item["layer"], item["shape"]
+        self.view.object_selection = [path]
+
+    def finish(self, identity, notify=True):
+        self.selected_identity = identity
+        super().finish(identity, notify)
