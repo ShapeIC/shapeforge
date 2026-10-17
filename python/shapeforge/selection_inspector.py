@@ -15,7 +15,7 @@ GROUPS = {
     "placement": ("Placement", ("panel_place_by_edges", "panel_place_by_ports", "placement_info", "edit_placement", "remove_placement")),
     "array": ("Array", ("create_array", "edit_array", "dissolve_array")),
     "ports": ("Ports", ("show_ports", "hide_ports", "delete_project_port")),
-    "information": ("Information / Actions", ("selection_info", "box_info", "keep_selected_box_id", "keep_selected_instance_id", "regenerate_placement")),
+    "information": ("Information / Actions", ("rename_instance", "selection_info", "box_info", "keep_selected_box_id", "keep_selected_instance_id", "regenerate_placement")),
 }
 
 

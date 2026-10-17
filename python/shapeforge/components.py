@@ -14,6 +14,7 @@ from shapeforge.parameters import resolve_value
 class GeneratedComponent:
     component: gf.Component
     recipe: dict
+    internal_parameters: dict | None = None
 
 
 # Keep generated objects alive and reuse them across sessions. CellKit providers

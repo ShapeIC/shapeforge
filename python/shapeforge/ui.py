@@ -728,6 +728,16 @@ def link_parameter_dimension(name, completed=None):
     return run_session_action(execute)
 
 
+def rename_instance():
+    def execute(session):
+        from shapeforge.instance_parameters import name_of
+        instance, _ = session.selected_primitive_instance()
+        name = pya.InputDialog.ask_string("ShapeForge — Rename Instance", "Instance name (used as name.parameter):", name_of(instance))
+        if name is not None:
+            session.rename_instance(name)
+    return run_session_action(execute)
+
+
 def select_instance_box():
     def execute(session):
         from shapeforge.reference_picker import ReferenceRequest

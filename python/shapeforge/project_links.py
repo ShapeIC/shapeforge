@@ -23,7 +23,7 @@ def validate_public(names, parameters):
     from shapeforge.parameters import derived_parameters
     derived = set(names) & derived_parameters(parameters)
     if derived:
-        raise ValueError("Geometry-derived parameters must be internal. Uncheck External for: " + ", ".join(sorted(derived)))
+        raise ValueError("Parameters derived from geometry or child instances must be internal. Uncheck External for: " + ", ".join(sorted(derived)))
     return list(names)
 
 
@@ -104,6 +104,7 @@ def generate_project(source, overrides, pdk, parameters=None):
     arguments = {name: resolve_value(name, document["parameters"]) for name in names}
     prepared = prepare_document(document, source)
     session = prepared.session
+    internal = {name: value for name, value in session.resolved_parameters().items() if name not in names}
     if session.cell.dbbox().empty():
         raise ValueError(f"Linked project '{source}' has no geometry.")
     recipe = {"provider": PROVIDER, "source": str(source), "pdk": pdk,
@@ -135,4 +136,4 @@ def generate_project(source, overrides, pdk, parameters=None):
         finally:
             gf.pdk._ACTIVE_PDK = previous_pdk
         _cache[key] = component
-    return GeneratedComponent(_cache[key], recipe)
+    return GeneratedComponent(_cache[key], recipe, internal)

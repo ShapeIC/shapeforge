@@ -330,4 +330,7 @@ def apply_metadata(session, updates):
         instance.cell_index = source.cell_index
         instance.set_property("shapeforge.instance_id", item["id"])
         instance.set_property("shapeforge.component_id", session.component_id_for_instance(source))
+        from shapeforge.instance_parameters import OUTPUTS
+        if source.property(OUTPUTS) is not None:
+            instance.set_property(OUTPUTS, source.property(OUTPUTS))
         instance.set_property(MEMBER, json.dumps(member, allow_nan=False))

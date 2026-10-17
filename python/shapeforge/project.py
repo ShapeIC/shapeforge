@@ -13,7 +13,7 @@ from shapeforge.session import Session
 from shapeforge.parameters import resolve_parameters, resolve_value
 
 FORMAT = "shapeforge"
-VERSION = 12
+VERSION = 13
 
 
 class ProjectError(ValueError):
@@ -154,8 +154,8 @@ def validate_document(document):
     """Validate JSON structure and references before invoking any provider."""
     if not isinstance(document, dict):
         raise ProjectError("The project must be a JSON object.")
-    if type(document.get("version")) is not int or document["version"] not in range(1, 13):
-        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 12.")
+    if type(document.get("version")) is not int or document["version"] not in range(1, 14):
+        raise ProjectError(f"Project format: unsupported version {document.get('version')!r}; supported versions are 1 through 13.")
     _object(document, ("format", "version", "project", "environment", "parameters",
                        "components", "instances", "boxes") +
             (("public_parameters",) if document["version"] >= 11 else ()), "Project")
@@ -176,13 +176,30 @@ def validate_document(document):
     parameters = document["parameters"]
     if not isinstance(parameters, dict):
         raise ProjectError("parameters must be an object.")
+    for key in ("components", "instances", "boxes"):
+        if not isinstance(document[key], list):
+            raise ProjectError(f"{key} must be an array.")
     try:
         if document["version"] == 1 and any(isinstance(value, str) for value in parameters.values()):
             raise ValueError("Parameter formulas require project version 2.")
         from shapeforge.parameters import is_measure, structural_parameters
         if document["version"] < 12 and any(is_measure(v) for v in parameters.values()):
             raise ValueError("Geometry measurement parameters require project version 12.")
-        parameters = structural_parameters(parameters)
+        from shapeforge.instance_parameters import default_name, valid_name
+        namespaces = {}
+        linked = {entry.get("id") for entry in document["components"] if isinstance(entry, dict)
+                  and isinstance(entry.get("recipe"), dict) and entry["recipe"].get("provider") == "shapeforge-project"}
+        for entry in document["instances"]:
+            if not isinstance(entry, dict) or entry.get("component_id") not in linked:
+                continue
+            identity = entry.get("id")
+            if not isinstance(identity, str):
+                continue  # The object schema reports this below.
+            alias = entry.get("instance_name") or default_name(identity)
+            if not valid_name(alias) or alias in namespaces or alias in parameters:
+                raise ValueError(f"Invalid or duplicate linked instance name: {alias}.")
+            namespaces[alias] = identity
+        parameters = structural_parameters(parameters, namespaces if document["version"] >= 13 else ())
         resolve_parameters(parameters)
     except ValueError as error:
         raise ProjectError(str(error)) from error
@@ -191,9 +208,6 @@ def validate_document(document):
         validate_public(document.get("public_parameters", []), parameters)
     except ValueError as error:
         raise ProjectError(str(error)) from error
-    for key in ("components", "instances", "boxes"):
-        if not isinstance(document[key], list):
-            raise ProjectError(f"{key} must be an array.")
     components = {}
     for entry in document["components"]:
         _object(entry, ("id", "recipe"), "component")
@@ -225,7 +239,12 @@ def validate_document(document):
          (("array", "array_member") if document["version"] >= 10 else ())),
     ):
         for entry in rows:
-            _object(entry, keys, kind)
+            _object(entry, keys + (("instance_name",) if kind == "instance" and "instance_name" in entry else ()), kind)
+            if "instance_name" in entry:
+                if document["version"] < 13:
+                    raise ProjectError("Instance names require project version 13.")
+                if entry.get("component_id") not in linked or not valid_name(entry["instance_name"]):
+                    raise ProjectError("Instance names require a linked project and a valid unique identifier.")
             _string(entry["id"], f"{kind}.id")
             if entry["id"] in objects:
                 raise ProjectError(f"Duplicate object ID: {entry['id']}. Resolve copied IDs explicitly.")
@@ -489,6 +508,7 @@ def _geometry_signature(cell, dbu):
 
 
 def snapshot(session):
+    from shapeforge.instance_parameters import name_of
     session.validate()
     components, instances, boxes, unsupported = {}, [], [], []
     for instance in session.cell.each_inst():
@@ -520,6 +540,8 @@ def snapshot(session):
             "via_center": _property(instance, "shapeforge.via_center"),
             "array": _property(instance, "shapeforge.array"),
             "array_member": _property(instance, "shapeforge.array_member"),
+            **({"instance_name": name_of(instance)}
+               if recipe["provider"] == "shapeforge-project" else {}),
         })
     for layer_index in session.layout.layer_indexes():
         info = session.layout.get_info(layer_index)
@@ -670,7 +692,7 @@ def _prepare_document(document, path):
         session.project_path = str(path)
         if document["environment"]["pdk"] is not None:
             cell.set_property("shapeforge.pdk", document["environment"]["pdk"])
-        warnings, cells = [], {}
+        warnings, cells, internal = [], {}, {}
         for index, entry in enumerate(document["components"]):
             generated, changes = reconstruct_component(entry["recipe"])
             warnings.extend(changes)
@@ -678,6 +700,7 @@ def _prepare_document(document, path):
             session.components[component_id] = generated.component
             # Future saves describe what was actually rebuilt in this environment.
             session.component_recipes[component_id] = generated.recipe
+            internal[component_id] = generated
             key = id(generated.component)
             if key not in cells:
                 target = layout.create_cell(f"SF_COMPONENT_{index}")
@@ -692,6 +715,10 @@ def _prepare_document(document, path):
             instance = cell.insert(pya.DCellInstArray(target.cell_index(), transform))
             instance.set_property("shapeforge.instance_id", entry["id"])
             instance.set_property("shapeforge.component_id", component_id)
+            from shapeforge.instance_parameters import NAME, store
+            if "instance_name" in entry:
+                instance.set_property(NAME, entry["instance_name"])
+            store(instance, internal[component_id])
             if entry.get("geometry_parameters") is not None:
                 instance.set_property("shapeforge.geometry_parameters", json.dumps(entry["geometry_parameters"], allow_nan=False))
             if entry.get("port_position") is not None:

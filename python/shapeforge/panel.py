@@ -6,6 +6,7 @@ from shapeforge.selection import selection_context
 from shapeforge.ports_panel import PortsEditor
 
 ACTION_TITLES = {
+    "rename_instance": "Rename Instance…",
     "select_instance_box": "Select Instance / Box…",
     "create_array": "Create Array…", "edit_array": "Edit Array…", "dissolve_array": "Dissolve Array",
     "edit_project_port": "Edit Project Port…", "delete_project_port": "Delete Project Port",

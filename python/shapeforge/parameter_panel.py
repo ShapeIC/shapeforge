@@ -11,6 +11,8 @@ class ParameterEditor:
         self.names = []
         self.on_change = None
         self.linked_definition = None
+        self.imported = {}
+        self.available = False
         self.widget = content = pya.QWidget(parent)
         layout = pya.QVBoxLayout(content)
         self.status = pya.QLabel("Create or open a ShapeForge project.", content)
@@ -27,7 +29,7 @@ class ParameterEditor:
         layout.addWidget(pya.QLabel("Name", content))
         self.name = pya.QLineEdit(content)
         layout.addWidget(self.name)
-        layout.addWidget(pya.QLabel("Number or expression: +, -, *, /, floor(expression), parentheses", content))
+        layout.addWidget(pya.QLabel("Number, expression or instance.parameter: +, -, *, /, floor(expression), parentheses", content))
         self.definition = pya.QLineEdit(content)
         layout.addWidget(self.definition)
         self.external = pya.QCheckBox("External (ask when inserting this project)", content)
@@ -55,12 +57,14 @@ class ParameterEditor:
         if self.widget._destroyed():
             return
         session = self.session_getter()
-        definitions, values, public = {}, {}, []
+        definitions, values, public, imported = {}, {}, [], {}
         try:
             if session is None:
                 raise ValueError("Create or open a ShapeForge project.")
             session.validate()
             definitions = session.parameters()
+            from shapeforge.instance_parameters import rows
+            imported = rows(session)
             values = session.resolved_parameters()
             public = session.public_parameters()
             status = f"{session.cell.name} — parameters in µm"
@@ -75,7 +79,9 @@ class ParameterEditor:
                     available = session.layout.is_editable()
                 except Exception:
                     pass
-        signature = (id(session), status, definitions, values, public, available)
+        self.available = available
+        self.imported = imported
+        signature = (id(session), status, definitions, values, public, available, imported)
         if signature == self.signature:
             return
         previous_name = self.name.text if self.signature and self.signature[0] == id(session) else ""
@@ -85,10 +91,12 @@ class ParameterEditor:
             widget.enabled = available
         self.table.blockSignals(True)
         try:
-            self.names = sorted(definitions)
+            self.names = sorted(definitions) + sorted(imported)
             self.table.rowCount = len(self.names)
             for row, name in enumerate(self.names):
-                for column, text in enumerate((name, describe_definition(definitions[name]), f"{values[name]:g}" if name in values else "—", "yes" if name in public else "no")):
+                definition = f"Read only · {name.split('.')[0]}" if name in imported else describe_definition(definitions[name])
+                value = imported.get(name, values.get(name))
+                for column, text in enumerate((name, definition, f"{value:g}" if value is not None else "—", "—" if name in imported else "yes" if name in public else "no")):
                     self.table.setItem(row, column, pya.QTableWidgetItem(text))
             self.table.resizeColumnsToContents()
             if previous_name in self.names:
@@ -102,10 +110,25 @@ class ParameterEditor:
             self.table.blockSignals(False)
         if previous_name in self.names:
             self.select_row(self.names.index(previous_name), 0, -1, -1)
+        else:
+            self.set_read_only(False)
+
+    def set_read_only(self, imported):
+        self.name.readOnly = self.definition.readOnly = imported
+        for index in (1, 2, 3):  # Add/Update, Delete, Link to Dimension.
+            self.buttons[index].enabled = self.available and not imported
+        self.external.enabled = self.available and not imported
 
     def select_row(self, row, column, previous_row, previous_column):
         if 0 <= row < len(self.names):
             name = self.names[row]
+            if name in self.imported:
+                self.name.text = name
+                self.definition.text = f"Read only · {name.split('.')[0]} · {self.imported[name]:g}"
+                self.linked_definition = None
+                self.external.checked = False
+                self.set_read_only(True)
+                return
             try:
                 session = self.session_getter()
                 session.validate()
@@ -114,14 +137,16 @@ class ParameterEditor:
                 self.refresh()
                 return
             self.name.text = name
+            self.set_read_only(False)
             self.linked_definition = dict(definition) if is_measure(definition) else None
             self.definition.text = describe_definition(definition)
             derived = name in derived_parameters(session.parameters())
             self.external.enabled = session.layout.is_editable() and not derived
-            self.external.toolTip = "Geometry-derived parameters are internal." if derived else "Ask when inserting this project."
+            self.external.toolTip = "Parameters derived from geometry or child instances are internal." if derived else "Ask when inserting this project."
             self.external.checked = name in session.public_parameters()
 
     def new(self, *args):
+        self.set_read_only(False)
         self.table.clearSelection()
         self.name.text = ""
         self.definition.text = ""

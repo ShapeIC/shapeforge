@@ -34,6 +34,10 @@ def expression_tree(value):
             _finite(node.value)
         elif isinstance(node, ast.Name):
             pass
+        elif isinstance(node, ast.Attribute):
+            if (not isinstance(node.value, ast.Name) or node.value.id.startswith("_")
+                    or keyword.iskeyword(node.attr)):
+                raise ValueError("Use only instance.parameter references to direct children.")
         elif isinstance(node, ast.Call):
             if (not isinstance(node.func, ast.Name) or node.func.id != "floor"
                     or len(node.args) != 1 or node.keywords):
@@ -49,8 +53,10 @@ def references(value):
         validate_measure(value)
         return set()
     nodes = list(ast.walk(expression_tree(value)))
-    functions = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
-    return {node.id for node in nodes if isinstance(node, ast.Name) and id(node) not in functions}
+    excluded = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
+    excluded.update(id(node.value) for node in nodes if isinstance(node, ast.Attribute))
+    return ({node.id for node in nodes if isinstance(node, ast.Name) and id(node) not in excluded}
+            | {f"{node.value.id}.{node.attr}" for node in nodes if isinstance(node, ast.Attribute)})
 
 
 def _evaluate(node, lookup):
@@ -58,6 +64,8 @@ def _evaluate(node, lookup):
         return _finite(node.value)
     if isinstance(node, ast.Name):
         return lookup(node.id)
+    if isinstance(node, ast.Attribute):
+        return lookup(f"{node.value.id}.{node.attr}")
     if isinstance(node, ast.Call):
         return _finite(math.floor(_evaluate(node.args[0], lookup)))
     if isinstance(node, ast.UnaryOp):
@@ -100,6 +108,8 @@ def validate_definitions(definitions):
         validate_measure(definition) if is_measure(definition) else expression_tree(definition)
     done, path = set(), []
     def visit(name):
+        if "." in name:
+            return  # Resolved by the instance context, never a Python attribute.
         if name not in definitions:
             raise ValueError(f"Unknown parameter: {name}")
         if name in path:
@@ -119,7 +129,8 @@ def validate_definitions(definitions):
 
 def derived_parameters(definitions):
     validate_definitions(definitions)
-    derived = {name for name, value in definitions.items() if is_measure(value)}
+    derived = {name for name, value in definitions.items()
+               if is_measure(value) or any("." in ref for ref in references(value))}
     while True:
         extended = derived | {name for name, value in definitions.items() if references(value) & derived}
         if extended == derived:
@@ -129,9 +140,10 @@ def derived_parameters(definitions):
 
 class ParameterValues(dict):
     """Serializable definitions with an operation-local, lazy value resolver."""
-    def __init__(self, definitions, measurement=None, lookup=None, structural=False):
+    def __init__(self, definitions, measurement=None, lookup=None, structural=False, internal=None):
         super().__init__(definitions)
         self.measurement, self.lookup, self.structural = measurement, lookup, structural
+        self.internal = internal
 
 
 def _lookup(definitions):
@@ -141,6 +153,11 @@ def _lookup(definitions):
     def lookup(name):
         if name in values:
             return values[name]
+        if "." in name:
+            callback = getattr(definitions, "internal", None)
+            if callback is None:
+                raise ValueError(f"Parameter {name} requires a linked instance context.")
+            return _finite(callback(name))
         if name not in definitions:
             raise ValueError(f"Unknown parameter: {name}")
         if name in path:
@@ -176,9 +193,13 @@ def resolve_value(value, definitions):
     # and names now; numerical checks run on the fully reconstructed staged plan.
     if getattr(definitions, "structural", False):
         names = references(value)
-        if names - definitions.keys():
-            raise ValueError(f"Unknown parameter: {sorted(names - definitions.keys())[0]}")
-        if names & derived_parameters(definitions):
+        missing = {name for name in names if "." not in name} - definitions.keys()
+        if missing:
+            raise ValueError(f"Unknown parameter: {sorted(missing)[0]}")
+        for name in names:
+            if "." in name:
+                _lookup(definitions)(name)
+        if any("." in name for name in names) or names & derived_parameters(definitions):
             return 1.0
     return _evaluate(expression_tree(value), _lookup(definitions))
 
@@ -198,11 +219,21 @@ def parameter_definition(value):
     return _finite(value)
 
 
-def structural_parameters(definitions):
+def structural_parameters(definitions, namespaces=()):
     """Syntax/name validation scope; geometry-dependent numeric checks are staged."""
     derived = derived_parameters(definitions)
     ordinary = _lookup({name: 1.0 if name in derived else value for name, value in definitions.items()})
-    return ParameterValues(definitions, lookup=ordinary, structural=True)
+    def internal(name):
+        if name.split(".")[0] not in namespaces:
+            raise ValueError(f"Unknown linked instance: {name.split('.')[0]}")
+        return 1.0
+    def lookup(name):
+        return internal(name) if "." in name else ordinary(name)
+    for value in definitions.values():
+        for name in references(value):
+            if "." in name:
+                internal(name)
+    return ParameterValues(definitions, lookup=lookup, structural=True)
 
 
 def describe_definition(definition):

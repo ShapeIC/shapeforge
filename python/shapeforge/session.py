@@ -108,6 +108,8 @@ class Session:
         primitive = generated.recipe.get("primitive", generated.recipe.get("function", generated.recipe.get("generator", "component")))
         source = generated.component
         recipe = generated.recipe
+        from shapeforge import instance_parameters as ip
+        instance_name = ip.new_name(self, recipe["source"]) if recipe["provider"] == "shapeforge-project" else None
 
         component_id = str(uuid4())
         gap = self.snap_um_to_dbu(5.0)
@@ -159,6 +161,9 @@ class Session:
                 component_id,
             )
             self.set_geometry_definition(instance, geometry, recipe["provider"])
+            if instance_name is not None:
+                instance.set_property(ip.NAME, instance_name)
+            ip.store(instance, generated)
         finally:
             view.commit()
 
@@ -222,12 +227,22 @@ class Session:
             recipe = dict(recipe, source=str(Path(source).resolve()))
         from shapeforge.technology import is_via_stack
         if recipe["provider"] == "shapeforge-project" or self.has_measurements():
+            from shapeforge.evaluation import Evaluation
             identity = instance.property("shapeforge.instance_id")
-            planned = self.primitive_update_plan(input_replacements={identity: geometry}, recipe_replacements={identity: recipe})
-            self.placement_plan(component_replacements=planned)
-            generated = planned.get(identity)
-            if generated is None:
-                generated = generate_inputs(recipe, geometry, self.parameters())
+            planned, updates = Evaluation(self, input_replacements={identity: geometry},
+                                          recipe_replacements={identity: recipe}).plan()
+            view = self.cellview.view()
+            self.hide_ports()
+            view.cancel()
+            view.transaction("ShapeForge: edit primitive parameters")
+            try:
+                self.apply_regeneration_plan(planned, updates)
+                current = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == identity)
+                self.set_geometry_definition(current, geometry, recipe["provider"])
+            finally:
+                view.commit()
+            view.add_missing_layers()
+            return True
         elif is_via_stack(recipe):
             identity = instance.property("shapeforge.instance_id")
             planned = self.primitive_update_plan(input_replacements={identity: geometry})
@@ -402,6 +417,8 @@ class Session:
             instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == object_id)
             instance.cell_index = target.cell_index()
             instance.set_property("shapeforge.component_id", component_id)
+            from shapeforge.instance_parameters import store
+            store(instance, generated)
             self.components[component_id] = generated.component
             self.component_recipes[component_id] = generated.recipe
         self.apply_placement_updates(updates)
@@ -794,6 +811,7 @@ class Session:
                     "shapeforge.instance_id",
                     new_id,
                 )
+                instance.delete_property("shapeforge.instance_name")
         finally:
             view.commit()
 
@@ -1062,6 +1080,7 @@ class Session:
                 )
 
                 # La copia queda libre; no hereda la relación del destino.
+                instance.delete_property("shapeforge.instance_name")
                 instance.delete_property("shapeforge.placement")
                 instance.delete_property("shapeforge.array")
                 instance.delete_property("shapeforge.array_member")
@@ -1072,11 +1091,20 @@ class Session:
 
     def measurement_reference_ids(self):
         from shapeforge.parameters import is_measure
-        return {value["reference_id"] for value in self.parameter_definitions().values() if is_measure(value)}
+        result = {value["reference_id"] for value in self.parameter_definitions().values() if is_measure(value)}
+        # Preserve IDs backing namespaces, including references used directly in
+        # dimensions or overrides rather than through a named local parameter.
+        result.update(i.property("shapeforge.instance_id") for i in self.cell.each_inst()
+                      if self.component_recipes.get(self.component_id_for_instance(i), {}).get("provider") == "shapeforge-project")
+        return result
 
     def has_measurements(self):
         from shapeforge.parameters import is_measure
-        return any(is_measure(v) for v in self.parameter_definitions().values())
+        if any(is_measure(v) or any("." in ref for ref in references(v))
+               for v in self.parameter_definitions().values()):
+            return True
+        return any(self.component_recipes.get(self.component_id_for_instance(i), {}).get("provider")
+                   == "shapeforge-project" for i in self.cell.each_inst())
 
     def current_measurement(self, definition):
         """Read committed native geometry, without generating or moving anything."""
@@ -1105,7 +1133,9 @@ class Session:
         if self._evaluation is not None:
             return self._evaluation.parameters
         from shapeforge.parameters import ParameterValues
-        return ParameterValues(self.parameter_definitions(), measurement=self.current_measurement)
+        from shapeforge.instance_parameters import value
+        return ParameterValues(self.parameter_definitions(), measurement=self.current_measurement,
+                               internal=lambda ref: value(self, ref))
 
     def parameter_definitions(self):
         self.validate()
@@ -1133,6 +1163,9 @@ class Session:
         name = name.strip()
 
         parameters = self.parameter_definitions()
+        from shapeforge.instance_parameters import instances
+        if name in instances(self):
+            raise ValueError(f"Parameter name conflicts with linked instance: {name}")
         parameters[name] = parameter_definition(value_um)
         from shapeforge.parameters import derived_parameters
         derived = derived_parameters(parameters)
@@ -1162,6 +1195,61 @@ class Session:
             self.cell.set_property("shapeforge.public_parameters", json.dumps(public))
         finally:
             view.commit()
+
+    def rename_instance(self, name):
+        from shapeforge.instance_parameters import name_of, valid_name, NAME
+        instance, recipe = self.selected_primitive_instance()
+        if recipe["provider"] != "shapeforge-project":
+            raise ValueError("Select a linked ShapeForge project instance.")
+        if not self.layout.is_editable():
+            raise RuntimeError("Open KLayout in editor mode: klayout -e")
+        name = name.strip()
+        old = name_of(instance)
+        if name == old:
+            return
+        others = [i for i in self.cell.each_inst() if i != instance]
+        if (not valid_name(name) or name in self.parameter_definitions()
+                or any(i.property(NAME) == name or name_of(i) == name for i in others
+                       if i.property("shapeforge.instance_id"))):
+            raise ValueError("Use a unique instance name valid as a Python identifier, without a leading underscore.")
+        used = self.instance_parameter_usages(old)
+        if used:
+            raise ValueError(f"Cannot rename {old}; used by:\n" + "\n".join(used))
+        view = self.cellview.view()
+        view.cancel()
+        view.transaction("ShapeForge: rename linked instance")
+        try:
+            instance.set_property(NAME, name)
+        finally:
+            view.commit()
+
+    def instance_parameter_usages(self, alias):
+        # Collect only expressions from supported recipe fields, avoiding literal
+        # strings such as generator names, paths and enum arguments.
+        names = {ref for definition in self.parameter_definitions().values() for ref in references(definition)
+                 if ref.startswith(alias + ".")}
+        # Missing child parameters must still protect their alias against rename.
+        def strings(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    yield from strings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from strings(item)
+            elif isinstance(value, str):
+                try:
+                    yield from references(value)
+                except ValueError:
+                    pass
+        objects = list(self.cell.each_inst())
+        for layer in self.layout.layer_indexes():
+            objects.extend(self.cell.shapes(layer).each())
+        for obj in objects:
+            for prop in ("geometry_parameters", "box", "placement", "array", "port_position", "via_center"):
+                raw = obj.property("shapeforge." + prop)
+                if raw:
+                    names.update(ref for ref in strings(json.loads(raw)) if ref.startswith(alias + "."))
+        return sorted({usage for name in names for usage in self.parameter_usages(name)})
 
     def resolve_offset(self, value):
         """Resolve a numeric value or safe arithmetic expression, in µm."""

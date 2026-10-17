@@ -17,6 +17,8 @@ class Evaluation:
         self.session = session
         definitions = session.parameter_definitions() if definitions is None else definitions
         validate_definitions(definitions)
+        from shapeforge.instance_parameters import instances
+        self.namespaces = {name: i.property("shapeforge.instance_id") for name, i in instances(session, definitions).items()}
         self.parameters = ParameterValues(definitions, lookup=self.parameter)
         self.objects = session.placement_objects(raw=True, box_replacement=box_replacement)
         self.inputs, self.recipes = input_replacements or {}, recipe_replacements or {}
@@ -73,6 +75,22 @@ class Evaluation:
             self.path.pop()
 
     def parameter(self, name):
+        if "." in name:
+            alias, parameter = name.split(".")
+            if alias not in self.namespaces:
+                raise ValueError(f"Unknown linked instance: {alias}")
+            identity = self.namespaces[alias]
+            def compute():
+                self.measured_ids.add(identity)
+                self.geometry(identity)
+                generated = self.components.get(identity)
+                from shapeforge.instance_parameters import outputs
+                values = (generated.internal_parameters if generated is not None and generated.internal_parameters is not None
+                          else outputs(self.item(identity)["instance"]))
+                if parameter not in values:
+                    raise ValueError(f"Instance {alias} has no internal parameter '{parameter}'.")
+                return values[parameter]
+            return self.node(("internal parameter", identity, parameter), compute)
         if name not in self.parameters:
             raise ValueError(f"Unknown parameter: {name}")
         definition = self.parameters[name]
@@ -151,7 +169,9 @@ class Evaluation:
                     values = self.session.resolve_via_inputs(values, instance.dcplx_trans.mag)
                 generated = generate_inputs(recipe, values, self.parameters)
             if generated is not None:
-                if generated.component is not old or generated.recipe != self.session.component_recipes.get(component_id):
+                from shapeforge.instance_parameters import outputs
+                changed_outputs = (generated.internal_parameters is not None and generated.internal_parameters != outputs(instance))
+                if generated.component is not old or generated.recipe != self.session.component_recipes.get(component_id) or changed_outputs:
                     if old is None or _geometry_signature(self.session.layout.cell(instance.cell_index), self.session.layout.dbu) != _geometry_signature(old.kdb_cell, self.session.layout.dbu):
                         raise ValueError(f"Instance {identity} was edited manually; its recipe cannot preserve those edits.")
                     self.components[identity] = generated
@@ -274,5 +294,7 @@ class Evaluation:
                     updates.append((item, transform))
             for name in self.parameters:
                 self.parameter(name)
+            if self.measured_ids & removals:
+                raise ValueError("Cannot reduce the array: a removed repetition is referenced by a parameter.")
             updates.extend(({"type": "array_remove", "id": identity}, None) for identity in sorted(removals))
             return self.components, updates

@@ -91,6 +91,9 @@ def selection_context(session):
                 lines.append(f"Array repetition ({member['row']}, {member['column']}); base: {member['owner_id']}")
                 actions["edit_primitive_parameters"] = "Inherits geometry from the array base. Edit the base or dissolve the array."
             if recipe.get("provider") == "shapeforge-project":
+                from shapeforge.instance_parameters import name_of
+                lines.append("Instance name: " + name_of(target))
+                actions["rename_instance"] = reason
                 lines.append("Linked project: " + recipe["source"])
                 lines.append("External parameters: " + ", ".join(recipe["public_parameters"]))
                 actions["relink_project"] = actions["edit_primitive_parameters"]
