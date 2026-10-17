@@ -183,6 +183,7 @@
         "version": 4
       },
       "id": "07025a01-10fc-4fb0-ab08-a6dd392a9b27",
+      "instance_name": "child_07025a01_10fc_4fb0_ab08_a6dd392a9b27",
       "placement": null,
       "port_position": null,
       "transform": {
@@ -256,6 +257,7 @@
         "version": 4
       },
       "id": "81f3456d-7dc7-48c6-af6c-d059bbbcb785",
+      "instance_name": "child_81f3456d_7dc7_48c6_af6c_d059bbbcb785",
       "placement": {
         "alignment": "center",
         "direction": "right",
@@ -323,6 +325,7 @@
     }
   ],
   "parameters": {
+    "Nf": "child_81f3456d_7dc7_48c6_af6c_d059bbbcb785.intNf",
     "centerW": 4.0,
     "height": 50.0,
     "leftColW": 1.0,
@@ -357,5 +360,5 @@
     "height",
     "centerW"
   ],
-  "version": 12
+  "version": 13
 }
