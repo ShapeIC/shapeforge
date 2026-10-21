@@ -4,9 +4,47 @@
       "array": null,
       "array_member": null,
       "box_dbu": [
+        0,
+        28640,
+        4730,
+        29640
+      ],
+      "definition": {
+        "height_um": 1.0,
+        "version": 2,
+        "width_um": 2.0,
+        "x_extents": {
+          "max": {
+            "anchor": "port",
+            "port": "S",
+            "reference_id": "37dbb115-c8e2-478b-afb0-279a1df273b6"
+          },
+          "min": {
+            "anchor": "left",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          }
+        },
+        "y_center": {
+          "anchor": "top",
+          "offset_um": "blocksSep/2",
+          "reference_id": "37dbb115-c8e2-478b-afb0-279a1df273b6"
+        }
+      },
+      "id": "0662ae95-30b0-4110-b168-4d04ae6c7abd",
+      "layer": {
+        "datatype": 0,
+        "layer": 10,
+        "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
         4290,
         36850,
-        16070,
+        16220,
         37350
       ],
       "definition": {
@@ -15,10 +53,9 @@
         "width_um": 18.86,
         "x_extents": {
           "max": {
-            "anchor": "port",
+            "anchor": "right",
             "offset_um": 0.0,
-            "port": "G",
-            "reference_id": "37dbb115-c8e2-478b-afb0-279a1df273b6"
+            "reference_id": "abed4826-581a-4006-b274-f85040a68355"
           },
           "min": {
             "anchor": "port",
@@ -122,6 +159,44 @@
       "array": null,
       "array_member": null,
       "box_dbu": [
+        9285,
+        39875,
+        9585,
+        41390
+      ],
+      "definition": {
+        "height_um": 1.7650000000000001,
+        "version": 2,
+        "width_um": 0.3,
+        "x_center": {
+          "anchor": "port",
+          "port": "IN",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        },
+        "y_extents": {
+          "max": {
+            "anchor": "top",
+            "reference_id": "8bd617ed-0f8e-44d5-9b56-9fcd24e2ce6b"
+          },
+          "min": {
+            "anchor": "port",
+            "port": "IN",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          }
+        }
+      },
+      "id": "23e479aa-ae31-4f5e-b62b-0577517239e5",
+      "layer": {
+        "datatype": 0,
+        "layer": 10,
+        "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
         10000,
         -158610,
         17000,
@@ -155,12 +230,12 @@
       "array_member": null,
       "box_dbu": [
         8030,
-        28990,
+        28640,
         12240,
-        29290
+        29640
       ],
       "definition": {
-        "height_um": 0.3,
+        "height_um": 1.0,
         "version": 2,
         "width_um": 16.02,
         "x_extents": {
@@ -188,6 +263,82 @@
         "datatype": 0,
         "layer": 10,
         "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
+        4230,
+        -64980,
+        5230,
+        29640
+      ],
+      "definition": {
+        "height_um": 2.0,
+        "version": 2,
+        "width_um": 1.0,
+        "x_center": {
+          "anchor": "port",
+          "port": "S",
+          "reference_id": "37dbb115-c8e2-478b-afb0-279a1df273b6"
+        },
+        "y_extents": {
+          "max": {
+            "anchor": "top",
+            "reference_id": "0662ae95-30b0-4110-b168-4d04ae6c7abd"
+          },
+          "min": {
+            "anchor": "port",
+            "port": "S",
+            "reference_id": "37dbb115-c8e2-478b-afb0-279a1df273b6"
+          }
+        }
+      },
+      "id": "431cc0ad-886e-43b0-a956-bd54cdd19206",
+      "layer": {
+        "datatype": 0,
+        "layer": 10,
+        "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
+        16700,
+        28140,
+        17000,
+        39375
+      ],
+      "definition": {
+        "height_um": 11.23,
+        "version": 2,
+        "width_um": 0.3,
+        "x_center": {
+          "anchor": "right",
+          "offset_um": -0.15,
+          "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+        },
+        "y_extents": {
+          "max": {
+            "anchor": "port",
+            "port": "VSS",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          },
+          "min": {
+            "anchor": "top",
+            "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+          }
+        }
+      },
+      "id": "4ac563a7-e89c-42c0-9217-38cf6de7b844",
+      "layer": {
+        "datatype": 0,
+        "layer": 30,
+        "name": "Metal3drawing"
       },
       "placement": null
     },
@@ -240,6 +391,49 @@
       "array": null,
       "array_member": null,
       "box_dbu": [
+        800,
+        30970,
+        4290,
+        34970
+      ],
+      "definition": {
+        "height_um": {
+          "kind": "port_width",
+          "port": "SOURCE_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "version": 3,
+        "width_um": 1.0,
+        "x_extents": {
+          "max": {
+            "anchor": "port",
+            "port": "G_0",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          },
+          "min": {
+            "anchor": "port",
+            "port": "SOURCE_0",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          }
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "SOURCE_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        }
+      },
+      "id": "6af9a880-ae9a-42cc-9608-62399b054e27",
+      "layer": {
+        "datatype": 0,
+        "layer": 10,
+        "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
         0,
         -158610,
         7000,
@@ -262,15 +456,47 @@
       "array": null,
       "array_member": null,
       "box_dbu": [
-        7880,
-        28990,
-        8180,
+        8235,
+        40890,
+        10635,
+        41390
+      ],
+      "definition": {
+        "height_um": 0.5,
+        "version": 2,
+        "width_um": 2.4,
+        "x_center": {
+          "anchor": "port",
+          "port": "IN",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        },
+        "y_center": {
+          "anchor": "top",
+          "offset_um": -0.25,
+          "reference_id": "21446897-97f3-4c54-bce0-b9d06e67b8d2"
+        }
+      },
+      "id": "8bd617ed-0f8e-44d5-9b56-9fcd24e2ce6b",
+      "layer": {
+        "datatype": 0,
+        "layer": 30,
+        "name": "Metal3drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
+        7780,
+        28640,
+        8280,
         32970
       ],
       "definition": {
         "height_um": 5.98,
         "version": 2,
-        "width_um": 0.3,
+        "width_um": 0.5,
         "x_center": {
           "anchor": "port",
           "offset_um": 0.0,
@@ -281,7 +507,7 @@
           "max": {
             "anchor": "port",
             "offset_um": 0.0,
-            "port": "SOURCE",
+            "port": "DRAIN",
             "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
           },
           "min": {
@@ -296,6 +522,43 @@
         "datatype": 0,
         "layer": 10,
         "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
+        10770,
+        28140,
+        12770,
+        34970
+      ],
+      "definition": {
+        "height_um": 6.83,
+        "version": 2,
+        "width_um": 2.0,
+        "x_center": {
+          "anchor": "port",
+          "port": "G_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "y_extents": {
+          "max": {
+            "anchor": "top",
+            "reference_id": "bab251c9-fb7f-41bf-9e85-6aeda086b3a7"
+          },
+          "min": {
+            "anchor": "top",
+            "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+          }
+        }
+      },
+      "id": "905d2410-39c7-4963-8621-9caa631af038",
+      "layer": {
+        "datatype": 0,
+        "layer": 30,
+        "name": "Metal3drawing"
       },
       "placement": null
     },
@@ -344,10 +607,53 @@
       "array": null,
       "array_member": null,
       "box_dbu": [
+        11770,
+        30970,
+        15260,
+        34970
+      ],
+      "definition": {
+        "height_um": {
+          "kind": "port_width",
+          "port": "SOURCE_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "version": 3,
+        "width_um": 2.17,
+        "x_extents": {
+          "max": {
+            "anchor": "port",
+            "port": "SOURCE_1",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          },
+          "min": {
+            "anchor": "port",
+            "port": "G_1",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          }
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "SOURCE_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        }
+      },
+      "id": "bab251c9-fb7f-41bf-9e85-6aeda086b3a7",
+      "layer": {
+        "datatype": 0,
+        "layer": 10,
+        "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
         8800,
         -65490,
         15680,
-        29290
+        29640
       ],
       "definition": {
         "height_um": 0.85,
@@ -378,6 +684,49 @@
         }
       },
       "id": "ccfdc85b-de88-47d8-af33-5bb39f6590bd",
+      "layer": {
+        "datatype": 0,
+        "layer": 10,
+        "name": "Metal2drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
+        0,
+        28640,
+        400,
+        40650
+      ],
+      "definition": {
+        "height_um": 10.77,
+        "version": 1,
+        "width_um": 0.5,
+        "x_extents": {
+          "max": {
+            "anchor": "port",
+            "port": "VDD",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          },
+          "min": {
+            "anchor": "left",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          }
+        },
+        "y_extents": {
+          "max": {
+            "anchor": "top",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          },
+          "min": {
+            "anchor": "bottom",
+            "reference_id": "0662ae95-30b0-4110-b168-4d04ae6c7abd"
+          }
+        }
+      },
+      "id": "db08c300-b421-41f3-935b-2f7905553411",
       "layer": {
         "datatype": 0,
         "layer": 10,
@@ -434,6 +783,48 @@
       "array": null,
       "array_member": null,
       "box_dbu": [
+        14470,
+        38510,
+        17000,
+        40240
+      ],
+      "definition": {
+        "height_um": {
+          "kind": "port_width",
+          "port": "VSS",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        },
+        "version": 3,
+        "width_um": 2.54,
+        "x_extents": {
+          "max": {
+            "anchor": "right",
+            "reference_id": "363963e5-0504-44f1-bce0-b2c9794b6d17"
+          },
+          "min": {
+            "anchor": "port",
+            "port": "VSS",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          }
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "VSS",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        }
+      },
+      "id": "f4701c1e-deea-4fd0-b746-fde2b5aa027a",
+      "layer": {
+        "datatype": 0,
+        "layer": 30,
+        "name": "Metal3drawing"
+      },
+      "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
         8470,
         35300,
         15070,
@@ -474,9 +865,170 @@
         "name": "Metal2drawing"
       },
       "placement": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "box_dbu": [
+        3290,
+        28140,
+        5290,
+        34970
+      ],
+      "definition": {
+        "height_um": 6.83,
+        "version": 2,
+        "width_um": 2.0,
+        "x_center": {
+          "anchor": "port",
+          "port": "G_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "y_extents": {
+          "max": {
+            "anchor": "top",
+            "reference_id": "6af9a880-ae9a-42cc-9608-62399b054e27"
+          },
+          "min": {
+            "anchor": "top",
+            "reference_id": "e9ad7240-6b83-4921-aa73-21667f3934ba"
+          }
+        }
+      },
+      "id": "fcdc44bc-bb43-4967-b0f6-16173452ac3a",
+      "layer": {
+        "datatype": 0,
+        "layer": 30,
+        "name": "Metal3drawing"
+      },
+      "placement": null
     }
   ],
   "components": [
+    {
+      "id": "00ec4ede-7163-47ef-9d0d-9f43c1258f53",
+      "recipe": {
+        "arguments": {
+          "length": 7.0,
+          "pinLayer": "Metal4pin",
+          "pinName": "VPWR",
+          "pinTextLayer": "Metal4text",
+          "width": 200.0
+        },
+        "generator": "project_port",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "length": "float",
+          "pinLayer": "str",
+          "pinName": "str",
+          "pinTextLayer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "050f9c0b-ea02-4c62-8750-91d0c1489a6c",
+      "recipe": {
+        "arguments": {
+          "length": 0.5,
+          "pinLayer": "Metal3pin",
+          "pinName": "CTRL",
+          "pinTextLayer": "Metal3text",
+          "width": 2.4
+        },
+        "generator": "project_port",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "length": "float",
+          "pinLayer": "str",
+          "pinName": "str",
+          "pinTextLayer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "2512f930-0f27-40fc-ab90-87bb9a742eb7",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal1",
+          "height": 4.0,
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "26c9ce98-fe57-4789-8166-b17ab35574ad",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal1",
+          "height": 4.0,
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
     {
       "id": "2e2a44b3-a60e-4e40-9c43-6644d3dd2ed8",
       "recipe": {
@@ -548,7 +1100,7 @@
         },
         "file": "hm_pg_lv_discharge_m1.py",
         "function": "discharge_m1",
-        "implementation_digest": "92d6d743f26e9598006119d4aeec30508a451aff003afb2d69e8b476b72fa4b6",
+        "implementation_digest": "10b3bce91a91f9e4735ac1234d3873832f0efc39b5b43f6af8ea6e97b13a1eb9",
         "library": "hm",
         "parameter_types": {
           "branches": "int",
@@ -567,6 +1119,66 @@
       }
     },
     {
+      "id": "40ffdb6f-c401-4be2-a1c9-0016cc24e9e1",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal1",
+          "height": 0.3,
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "41d2a7fd-bf98-43a0-b625-f1b338232d8c",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal2",
+          "height": 0.5,
+          "top_layer": "Metal3",
+          "width": 2.4
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
       "id": "5669ee16-a4c6-4720-a3c3-43200c3f9ffa",
       "recipe": {
         "arguments": {
@@ -576,7 +1188,7 @@
         },
         "file": "hm_pg_lv_inv.py",
         "function": "inverter",
-        "implementation_digest": "92d6d743f26e9598006119d4aeec30508a451aff003afb2d69e8b476b72fa4b6",
+        "implementation_digest": "10b3bce91a91f9e4735ac1234d3873832f0efc39b5b43f6af8ea6e97b13a1eb9",
         "library": "hm",
         "parameter_types": {
           "length": "float",
@@ -594,21 +1206,23 @@
       }
     },
     {
-      "id": "829a16db-2530-40bd-bf09-3a6988c2a5d5",
+      "id": "79731af1-3339-4c27-9638-71cc867b750a",
       "recipe": {
         "arguments": {
-          "bottom_layer": "Metal1",
-          "height": 1.0,
-          "top_layer": "Metal2",
-          "width": 0.32
+          "length": 2.4,
+          "pinLayer": "Metal4pin",
+          "pinName": "GND",
+          "pinTextLayer": "Metal4text",
+          "width": 200.0
         },
-        "generator": "via_stack",
+        "generator": "project_port",
         "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
         "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
         "parameter_types": {
-          "bottom_layer": "str",
-          "height": "float",
-          "top_layer": "str",
+          "length": "float",
+          "pinLayer": "str",
+          "pinName": "str",
+          "pinTextLayer": "str",
           "width": "float"
         },
         "pdk": "ihp-sg13g2",
@@ -697,7 +1311,7 @@
           "strapsW": 0.3,
           "width": 17.0
         },
-        "dependency_digest": "88a315d41ae9b62a1984f40ff8c545aefe7053e54adf2707225cbbc918531ca7",
+        "dependency_digest": "d5ead94b6b83c17d3772050756bee8ecec95e41d4051e9fe3a7ffb7cd0675b43",
         "overrides": {
           "centerW": 1.0,
           "height": 186.75000000000003,
@@ -732,6 +1346,98 @@
       }
     },
     {
+      "id": "8d01fa24-4bee-4546-9a92-128e68d6fd9f",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal1",
+          "height": 1.73,
+          "top_layer": "Metal3",
+          "width": 0.3
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "93f4b7f6-eae8-44de-9178-fbe94f929555",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal1",
+          "height": 1.75,
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "97b1db48-f77b-4517-b7db-0380b394b2b9",
+      "recipe": {
+        "arguments": {
+          "length": 7.0,
+          "pinLayer": "Metal4pin",
+          "pinName": "GPWR",
+          "pinTextLayer": "Metal4text",
+          "width": 200.0
+        },
+        "generator": "project_port",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "length": "float",
+          "pinLayer": "str",
+          "pinName": "str",
+          "pinTextLayer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
       "id": "98dd3b88-899b-4d48-8f4e-869846ac91b3",
       "recipe": {
         "arguments": {
@@ -739,6 +1445,66 @@
           "height": 0.3,
           "top_layer": "Metal4",
           "width": 5.44
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "c6d40adf-d22f-4c4f-8a2b-124c609084e0",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal2",
+          "height": 4.0,
+          "top_layer": "Metal3",
+          "width": 2.0
+        },
+        "generator": "via_stack",
+        "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
+        "layout_policy": "symmetric-adjacent-with-edge-dummies-v3",
+        "parameter_types": {
+          "bottom_layer": "str",
+          "height": "float",
+          "top_layer": "str",
+          "width": "float"
+        },
+        "pdk": "ihp-sg13g2",
+        "provider": "shapeic-cellkit-technology",
+        "technology_digest": "0261ccf700640c28b9c9d6fcf89e1bd26f06337e09c1b8681bb31121399df81d",
+        "technology_revision": "local-installation",
+        "versions": {
+          "gdsfactory": "9.45.0",
+          "ihp-gdsfactory": "2.0.0",
+          "kfactory": "2.6.1",
+          "shapeic-cellkit": "0.1.0"
+        }
+      }
+    },
+    {
+      "id": "cb0efbd9-fefe-49ac-a132-a571a4df2d23",
+      "recipe": {
+        "arguments": {
+          "bottom_layer": "Metal1",
+          "height": 4.0,
+          "top_layer": "Metal2",
+          "width": 0.3
         },
         "generator": "via_stack",
         "implementation_digest": "7865805482c058568c2c79eb505dee40550b6189a432e22fc4d57a60fe584bf1",
@@ -832,7 +1598,7 @@
         },
         "file": "hm_pg_lv_power_pmos_v2.py",
         "function": "power_lv_pmos",
-        "implementation_digest": "92d6d743f26e9598006119d4aeec30508a451aff003afb2d69e8b476b72fa4b6",
+        "implementation_digest": "10b3bce91a91f9e4735ac1234d3873832f0efc39b5b43f6af8ea6e97b13a1eb9",
         "library": "hm",
         "parameter_types": {
           "length": "float",
@@ -1171,6 +1937,47 @@
     },
     {
       "array": null,
+      "array_member": null,
+      "component_id": "26c9ce98-fe57-4789-8166-b17ab35574ad",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal1",
+          "height": {
+            "kind": "port_width",
+            "port": "SOURCE_1",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          },
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "version": 3
+      },
+      "id": "0a604200-c189-45e8-925e-8c479bb34a66",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 15.26,
+        "y_um": 32.97
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "SOURCE_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "SOURCE_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        }
+      }
+    },
+    {
+      "array": null,
       "array_member": {
         "column": 0,
         "owner_id": "733f85ad-19d0-44d5-8704-db0f74f815c5",
@@ -1256,6 +2063,47 @@
         "y_um": -59.235
       },
       "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "2512f930-0f27-40fc-ab90-87bb9a742eb7",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal1",
+          "height": {
+            "kind": "port_width",
+            "port": "SOURCE_0",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          },
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "version": 3
+      },
+      "id": "0af74077-987a-4f32-a689-53db4cf655f5",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 0.8,
+        "y_um": 32.97
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "SOURCE_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "SOURCE_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        }
+      }
     },
     {
       "array": null,
@@ -1386,6 +2234,35 @@
         "mirror": false,
         "x_um": 4.28,
         "y_um": -37.635
+      },
+      "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "050f9c0b-ea02-4c62-8750-91d0c1489a6c",
+      "geometry_parameters": null,
+      "id": "0fdd665b-2901-451a-8a60-f90da8efd1ea",
+      "placement": null,
+      "port_position": {
+        "version": 1,
+        "x_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "8bd617ed-0f8e-44d5-9b56-9fcd24e2ce6b"
+        },
+        "y_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "8bd617ed-0f8e-44d5-9b56-9fcd24e2ce6b"
+        }
+      },
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 9.435,
+        "y_um": 41.14
       },
       "via_center": null
     },
@@ -2863,6 +3740,35 @@
     },
     {
       "array": null,
+      "array_member": null,
+      "component_id": "40ffdb6f-c401-4be2-a1c9-0016cc24e9e1",
+      "geometry_parameters": null,
+      "id": "40549921-f4a8-4999-ba20-bfbcc5fae56e",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 9.435,
+        "y_um": 39.875
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "IN",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "IN",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        }
+      }
+    },
+    {
+      "array": null,
       "array_member": {
         "column": 0,
         "owner_id": "d7c1c2db-66d2-4f07-b225-cebb0732c9d3",
@@ -3805,6 +4711,48 @@
     },
     {
       "array": null,
+      "array_member": null,
+      "component_id": "97b1db48-f77b-4517-b7db-0380b394b2b9",
+      "geometry_parameters": {
+        "values": {
+          "length": {
+            "expression": "gpwrW"
+          },
+          "pinLayer": "Metal4pin",
+          "pinName": "GPWR",
+          "pinTextLayer": "Metal4text",
+          "width": {
+            "expression": "height"
+          }
+        },
+        "version": 2
+      },
+      "id": "690483ec-eeda-4341-a9eb-ba5f4d498089",
+      "placement": null,
+      "port_position": {
+        "version": 1,
+        "x_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "363963e5-0504-44f1-bce0-b2c9794b6d17"
+        },
+        "y_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "363963e5-0504-44f1-bce0-b2c9794b6d17"
+        }
+      },
+      "transform": {
+        "angle": 90.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 13.5,
+        "y_um": -58.61
+      },
+      "via_center": null
+    },
+    {
+      "array": null,
       "array_member": {
         "column": 0,
         "owner_id": "d7c1c2db-66d2-4f07-b225-cebb0732c9d3",
@@ -4113,6 +5061,47 @@
     },
     {
       "array": null,
+      "array_member": null,
+      "component_id": "8d01fa24-4bee-4546-9a92-128e68d6fd9f",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal1",
+          "height": {
+            "kind": "port_width",
+            "port": "VSS",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          },
+          "top_layer": "Metal3",
+          "width": 0.3
+        },
+        "version": 3
+      },
+      "id": "7252e139-29fa-4c4f-b2a6-d3bff8e0143b",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 14.47,
+        "y_um": 39.375
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "VSS",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "VSS",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        }
+      }
+    },
+    {
+      "array": null,
       "array_member": {
         "column": 0,
         "owner_id": "733f85ad-19d0-44d5-8704-db0f74f815c5",
@@ -4337,6 +5326,33 @@
     },
     {
       "array": null,
+      "array_member": null,
+      "component_id": "41d2a7fd-bf98-43a0-b625-f1b338232d8c",
+      "geometry_parameters": null,
+      "id": "741849f3-646f-4933-b116-6b7eb50d5980",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 9.435,
+        "y_um": 41.14
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "center",
+          "reference_id": "8bd617ed-0f8e-44d5-9b56-9fcd24e2ce6b"
+        },
+        "y_center": {
+          "anchor": "center",
+          "reference_id": "8bd617ed-0f8e-44d5-9b56-9fcd24e2ce6b"
+        }
+      }
+    },
+    {
+      "array": null,
       "array_member": {
         "column": 0,
         "owner_id": "733f85ad-19d0-44d5-8704-db0f74f815c5",
@@ -4422,6 +5438,47 @@
         "y_um": -100.035
       },
       "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "93f4b7f6-eae8-44de-9178-fbe94f929555",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal1",
+          "height": {
+            "kind": "port_width",
+            "port": "VDD",
+            "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+          },
+          "top_layer": "Metal2",
+          "width": 0.3
+        },
+        "version": 3
+      },
+      "id": "764b0f16-8b75-41b0-91f4-0f2c7ea9e578",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 0.4,
+        "y_um": 39.375
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "VDD",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "VDD",
+          "reference_id": "614b198c-51b6-4d3f-a67c-847591fa0dd9"
+        }
+      }
     },
     {
       "array": null,
@@ -5038,6 +6095,47 @@
         "y_um": -144.435
       },
       "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "c6d40adf-d22f-4c4f-8a2b-124c609084e0",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal2",
+          "height": {
+            "kind": "port_width",
+            "port": "SOURCE_1",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          },
+          "top_layer": "Metal3",
+          "width": 2.0
+        },
+        "version": 3
+      },
+      "id": "89bc5e73-3148-4bc1-b4df-c86e06f07a3f",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 11.77,
+        "y_um": 32.97
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "GATE_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "SOURCE_1",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        }
+      }
     },
     {
       "array": null,
@@ -5720,6 +6818,47 @@
         "y_um": -98.83500000000001
       },
       "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "c6d40adf-d22f-4c4f-8a2b-124c609084e0",
+      "geometry_parameters": {
+        "values": {
+          "bottom_layer": "Metal2",
+          "height": {
+            "kind": "port_width",
+            "port": "SOURCE_0",
+            "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+          },
+          "top_layer": "Metal3",
+          "width": 2.0
+        },
+        "version": 3
+      },
+      "id": "aa486140-4874-496f-9609-26d1a9f2b7b0",
+      "placement": null,
+      "port_position": null,
+      "transform": {
+        "angle": 0.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 4.29,
+        "y_um": 32.97
+      },
+      "via_center": {
+        "version": 1,
+        "x_center": {
+          "anchor": "port",
+          "port": "GATE_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        },
+        "y_center": {
+          "anchor": "port",
+          "port": "SOURCE_0",
+          "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
+        }
+      }
     },
     {
       "array": null,
@@ -7484,6 +8623,90 @@
     },
     {
       "array": null,
+      "array_member": null,
+      "component_id": "79731af1-3339-4c27-9638-71cc867b750a",
+      "geometry_parameters": {
+        "values": {
+          "length": {
+            "expression": "gndW"
+          },
+          "pinLayer": "Metal4pin",
+          "pinName": "GND",
+          "pinTextLayer": "Metal4text",
+          "width": {
+            "expression": "height"
+          }
+        },
+        "version": 2
+      },
+      "id": "dd1ba38d-2027-4993-8bab-271ce64b8eeb",
+      "placement": null,
+      "port_position": {
+        "version": 1,
+        "x_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "21446897-97f3-4c54-bce0-b9d06e67b8d2"
+        },
+        "y_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "21446897-97f3-4c54-bce0-b9d06e67b8d2"
+        }
+      },
+      "transform": {
+        "angle": 90.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 8.5,
+        "y_um": -58.61
+      },
+      "via_center": null
+    },
+    {
+      "array": null,
+      "array_member": null,
+      "component_id": "00ec4ede-7163-47ef-9d0d-9f43c1258f53",
+      "geometry_parameters": {
+        "values": {
+          "length": {
+            "expression": "vpwrW"
+          },
+          "pinLayer": "Metal4pin",
+          "pinName": "VPWR",
+          "pinTextLayer": "Metal4text",
+          "width": {
+            "expression": "height"
+          }
+        },
+        "version": 2
+      },
+      "id": "dd53b009-974f-40f3-8143-e706692f7119",
+      "placement": null,
+      "port_position": {
+        "version": 1,
+        "x_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "83a08139-7353-4745-bb9a-430728962a2c"
+        },
+        "y_center": {
+          "anchor": "center",
+          "offset_um": 0.0,
+          "reference_id": "83a08139-7353-4745-bb9a-430728962a2c"
+        }
+      },
+      "transform": {
+        "angle": 90.0,
+        "mag": 1.0,
+        "mirror": false,
+        "x_um": 3.5,
+        "y_um": -58.61
+      },
+      "via_center": null
+    },
+    {
+      "array": null,
       "array_member": {
         "column": 0,
         "owner_id": "d7c1c2db-66d2-4f07-b225-cebb0732c9d3",
@@ -8153,17 +9376,17 @@
     {
       "array": null,
       "array_member": null,
-      "component_id": "829a16db-2530-40bd-bf09-3a6988c2a5d5",
+      "component_id": "cb0efbd9-fefe-49ac-a132-a571a4df2d23",
       "geometry_parameters": {
         "values": {
           "bottom_layer": "Metal1",
-          "height": 1.0,
-          "top_layer": "Metal2",
-          "width": {
+          "height": {
             "kind": "port_width",
-            "port": "SOURCE",
+            "port": "DRAIN",
             "reference_id": "2fd40102-9426-4428-bfb0-5e1ff7d7e9a8"
-          }
+          },
+          "top_layer": "Metal2",
+          "width": 0.3
         },
         "version": 3
       },
