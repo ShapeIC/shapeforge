@@ -8,6 +8,7 @@ import math
 import tomllib
 from typing import get_type_hints
 from shapeforge.parameters import resolve_value
+from shapeforge import runtime
 
 
 @dataclass(frozen=True)
@@ -23,16 +24,27 @@ _generated = {}
 
 
 def dependency_versions():
+    return runtime.loaded(("versions",), _dependency_versions)
+
+
+def _dependency_versions():
     result = {}
     for package in ("shapeic-cellkit", "gdsfactory", "kfactory", "ihp-gdsfactory"):
         try:
             result[package] = version(package)
         except PackageNotFoundError:
             pass
+    metadata = Path(os.environ.get("SHAPEFORGE_CELLKIT_ROOT", Path(__file__).resolve().parents[2] / "shapeic-cellkit")) / "pyproject.toml"
+    if "shapeic-cellkit" not in result and metadata.is_file():
+        result["shapeic-cellkit"] = tomllib.loads(metadata.read_text())["project"]["version"]
     return result
 
 
 def cellkit_catalog(pdk):
+    return runtime.loaded(("catalog", pdk), lambda: _cellkit_catalog(pdk))
+
+
+def _cellkit_catalog(pdk):
     try:
         from shapeic_cellkit import CellKitCatalog
     except ImportError as error:
@@ -92,6 +104,7 @@ def available_primitives(catalog):
     return result
 
 
+@runtime.provider
 def generate_cellkit(primitive, geometry, pdk="ihp-sg13g2", options=None):
     try:
         from shapeic_cellkit import PrimitiveGeometry
@@ -122,7 +135,7 @@ def generate_cellkit(primitive, geometry, pdk="ihp-sg13g2", options=None):
             values[name] = float(format(value, ".15g"))
     geometry = PrimitiveGeometry(**values)
     catalog = cellkit_catalog(pdk)
-    descriptor = catalog.primitive(primitive)
+    descriptor = runtime.loaded(("primitive", pdk, primitive), lambda: catalog.primitive(primitive))
     versions = dependency_versions()
     if "shapeic-cellkit" not in versions:
         # Source checkouts can be imported through PYTHONPATH without installed
@@ -142,10 +155,13 @@ def generate_cellkit(primitive, geometry, pdk="ihp-sg13g2", options=None):
         "technology_revision": catalog.technology().revision,
         "layout_policy": descriptor.provider.LAYOUT_POLICY,
     }
-    key = json.dumps(recipe, sort_keys=True, allow_nan=False)
+    key = runtime.cache_key(recipe, (str(catalog.root),))
     if key not in _generated:
+        runtime.count("generator_executions")
         rendered = descriptor.render(geometry)
         _generated[key] = GeneratedComponent(rendered.component, recipe)
+    else:
+        runtime.count("generation_cache_hits")
     return _generated[key]
 
 
@@ -202,6 +218,50 @@ def generate_inputs(recipe, values, parameters):
         return generate_technology(recipe["generator"], values, recipe["pdk"], parameters)
     return generate_cellkit(recipe["primitive"], resolve_geometry(values, parameters),
                            recipe["pdk"], recipe["options"])
+
+
+def provider_stamp(recipe):
+    """Version of a known provider without generating any geometry."""
+    provider = recipe["provider"]
+    if provider == "external-python":
+        from shapeforge.external import source_snapshot
+        return source_snapshot(recipe)["digest"]
+    if provider in ("shapeic-cellkit", "shapeic-cellkit-technology"):
+        catalog = cellkit_catalog(recipe["pdk"])
+        if provider == "shapeic-cellkit":
+            descriptor = runtime.loaded(("primitive", recipe["pdk"], recipe["primitive"]),
+                                        lambda: catalog.primitive(recipe["primitive"]))
+            implementation = descriptor.implementation_digest
+        else:
+            from shapeforge.technology import _module
+            implementation = _module(catalog)[1]
+        return json.dumps([implementation, catalog.technology_digest, dependency_versions()], sort_keys=True)
+    return json.dumps(recipe, sort_keys=True)
+
+
+def effective_inputs(recipe, values, parameters):
+    """Resolve bindings without entering a generator or reading its sources."""
+    provider = recipe["provider"]
+    if provider == "shapeforge-project":
+        from shapeforge.project_links import resolve_overrides
+        return resolve_overrides(values, parameters, recipe["public_parameters"]), recipe["overrides"]
+    if provider == "external-python":
+        from shapeforge.external import resolve_arguments, generator_specs
+        types = recipe["parameter_types"]
+        if set(values) != set(types):
+            specs = generator_specs(recipe)
+            import inspect
+            values = {**{n: spec["default"] for n, spec in specs.items()
+                         if spec["default"] is not inspect.Parameter.empty}, **values}
+        return resolve_arguments(values, types, parameters), recipe["arguments"]
+    if provider == "shapeic-cellkit-technology":
+        from shapeforge.technology import resolve_inputs
+        return resolve_inputs(recipe["generator"], values, parameters, recipe["pdk"], defaults=True), recipe["arguments"]
+    if provider == "shapeic-cellkit":
+        result = resolve_geometry(values, parameters)
+        result = asdict(result) if not isinstance(result, dict) else result
+        return {n: float(format(v, ".15g")) if type(v) is float else v for n, v in result.items()}, recipe["geometry"]
+    return values, values
 
 
 def input_definition(values, provider):

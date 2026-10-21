@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 import pya
+from shapeforge import runtime
 
 from shapeforge.components import reconstruct_component, validate_input_definition
 from shapeforge.session import Session
@@ -649,6 +650,7 @@ class PreparedProject:
         session.components = dict(self.session.components)
         session.component_recipes = dict(self.session.component_recipes)
         session.project_path = self.path
+        session._sources = dict(self.session._sources)
         cellview.cell = cell
         return session
 
@@ -666,6 +668,7 @@ def _unique_keys(pairs):
     return result
 
 
+@runtime.provider
 def prepare_project(path):
     """Validate the include graph before invoking providers; stage off-screen."""
     from shapeforge.project_links import read_tree
@@ -673,6 +676,7 @@ def prepare_project(path):
     return prepare_document(document, Path(path).resolve())
 
 
+@runtime.provider
 def prepare_document(document, path):
     from shapeforge.project_links import project_scope
     with project_scope(path):

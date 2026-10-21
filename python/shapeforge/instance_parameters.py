@@ -63,7 +63,9 @@ def outputs(instance):
 
 def store(instance, generated):
     if generated.internal_parameters is not None:
-        instance.set_property(OUTPUTS, json.dumps(generated.internal_parameters, allow_nan=False))
+        value = json.dumps(generated.internal_parameters, allow_nan=False)
+        if instance.property(OUTPUTS) != value:
+            instance.set_property(OUTPUTS, value)
 
 
 def value(session, reference):

@@ -77,7 +77,12 @@ class BoxAxis:
 class Form:
     def __init__(self, controller, parent, layout, base, section):
         self.controller, self.base, self.section = controller, deepcopy(base), section
-        specs = model.generation_specs(base) if section == "generation" else None
+        specs = None
+        if section == "generation":
+            from shapeforge import runtime
+            with runtime.scope(controller.panel.session_getter(), refresh=getattr(controller, "reload_sources", False), publish=True):
+                specs = model.generation_specs(base)
+            controller.reload_sources = False
         self.widget = pya.QWidget(parent)
         self.layout = pya.QVBoxLayout(self.widget)
         self.fields, self.axes, self.centers = {}, {}, {}
@@ -175,6 +180,8 @@ class Form:
             self.status.text = self.error
 
     def revert(self, *args):
+        if self.section == "generation":
+            self.controller.reload_sources = True
         self.controller.discard(self)
         self.controller.panel.refresh()
 
@@ -233,6 +240,7 @@ class SelectionInspector:
         return (*self.current["key"], section)
 
     def discard(self, form):
+        self.panel._state_token = None
         key = (*form.base["key"], form.section)
         self.forms.pop(key, None)
         form.widget.visible = False

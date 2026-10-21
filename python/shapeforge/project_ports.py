@@ -7,6 +7,7 @@ import pya
 
 from shapeforge.parameters import resolve_value
 from shapeforge.technology import generate_technology
+from shapeforge import runtime
 
 POSITION_PROPERTY = "shapeforge.port_position"
 
@@ -102,6 +103,7 @@ def _stage(session):
     staged.components = dict(session.components)
     staged.component_recipes = dict(session.component_recipes)
     staged.project_path = session.project_path
+    staged._sources = dict(session._sources)
     return staged
 
 
@@ -175,6 +177,7 @@ def edit(session, object_id, values, position=None, orientation=None):
     return _change(session, object_id, values, position, orientation)
 
 
+@runtime.operation()
 def _change(session, object_id, values, position, orientation):
     validate_position(position, session.parameters())
     if orientation is not None and (type(orientation) not in (int, float) or orientation not in (0, 90, 180, 270)):

@@ -157,7 +157,8 @@ def _lookup(definitions):
             callback = getattr(definitions, "internal", None)
             if callback is None:
                 raise ValueError(f"Parameter {name} requires a linked instance context.")
-            return _finite(callback(name))
+            values[name] = _finite(callback(name))
+            return values[name]
         if name not in definitions:
             raise ValueError(f"Unknown parameter: {name}")
         if name in path:

@@ -38,9 +38,11 @@ def external_libraries():
     run_session_action(execute)
 
 
-def ask_external_arguments(recipe, previous, session):
+def ask_external_arguments(recipe, previous, session, editing=False):
     from shapeforge.external import generator_specs
-    specs = generator_specs(recipe)  # Validate every annotation before prompting.
+    from shapeforge import runtime
+    with runtime.scope(session, refresh=not editing):
+        specs = generator_specs(recipe)  # Validate every annotation before prompting.
     return ask_component_arguments(recipe["function"], specs, previous, session)
 
 
@@ -1220,8 +1222,10 @@ def insert_test_instance():
 
 def ask_project_arguments(source, previous, session, editing=False):
     from shapeforge.project_links import interface, project_scope
-    with project_scope(session.project_path):
-        fields = interface(source)
+    from shapeforge import runtime
+    with runtime.scope(session, refresh=not editing):
+        with project_scope(session.project_path):
+            fields = interface(source)
     names = {name for name, definition, value in fields}
     values = dict(previous)
     title = "ShapeForge — Project Parameters"
@@ -1230,7 +1234,7 @@ def ask_project_arguments(source, previous, session, editing=False):
             "The linked project has no external parameters in its saved file:\n"
             f"{source}\n\n"
             "Open the child project separately. In Parameters, select a parameter, "
-            "check External and click Add / Update. Then use Save Project and retry "
+            "check External and click Add / Update. Then use Save Project, Regenerate Placement in the parent, and retry "
             "Edit Primitive Parameters on this instance.\n\n"
             "This editor reads the saved child file; unsaved changes in another view "
             "are not used.", pya.MessageBox.Ok)
@@ -1294,7 +1298,7 @@ def edit_primitive_parameters():
         if recipe["provider"] == "shapeforge-project":
             values = ask_project_arguments(recipe["source"], previous, session, editing=True)
         elif recipe["provider"] == "external-python":
-            values = ask_external_arguments(recipe, previous, session)
+            values = ask_external_arguments(recipe, previous, session, editing=True)
         elif recipe["provider"] == "shapeic-cellkit-technology":
             if recipe["generator"] == "via_stack":
                 values = yield from ask_via_arguments(session, technology_specs("via_stack", recipe["pdk"]), previous,

@@ -6,6 +6,8 @@ import hashlib
 import json
 import keyword
 from pathlib import Path
+from copy import deepcopy
+from shapeforge import runtime
 
 from shapeforge.parameters import resolve_parameters, resolve_value
 
@@ -13,6 +15,7 @@ PROVIDER = "shapeforge-project"
 PUBLIC_PROPERTY = "shapeforge.public_parameters"
 _ancestors = ContextVar("shapeforge_project_ancestors", default=())
 _cache = {}
+_variants = {}
 
 
 def validate_public(names, parameters):
@@ -48,13 +51,22 @@ def project_scope(path):
 
 
 def read_tree(path, ancestors=()):
+    path = Path(path).resolve()
+    if path in ancestors:
+        from shapeforge.project import ProjectError
+        raise ProjectError("Recursive project inclusion: " + " → ".join(str(p) for p in (*ancestors, path)))
+    document, digest = runtime.loaded(("project_tree", str(path)), lambda: _read_tree(path, ancestors))
+    return deepcopy(document), digest
+
+
+def _read_tree(path, ancestors=()):
     """Validate the entire include graph and dependencies before any generation."""
     from shapeforge.project import validate_document, _reject_constant, _unique_keys, ProjectError
     path = Path(path).resolve()
     if path in ancestors:
         raise ProjectError("Recursive project inclusion: " + " → ".join(str(p) for p in (*ancestors, path)))
     try:
-        raw = path.read_bytes()
+        raw = runtime.loaded(("project_bytes", str(path)), path.read_bytes)
         document = json.loads(raw, parse_constant=_reject_constant, object_pairs_hook=_unique_keys)
         validate_document(document)
         fingerprints = [hashlib.sha256(raw).hexdigest()]
@@ -69,9 +81,11 @@ def read_tree(path, ancestors=()):
                 recipe["source"] = str(source)
                 fingerprints.append(digest)
             elif recipe["provider"] == "external-python":
-                from shapeforge.external import library_root, source_path
-                source = source_path(library_root(recipe["library"], recipe["pdk"]), recipe["file"])
-                fingerprints.append(hashlib.sha256(Path(source).read_bytes()).hexdigest())
+                from shapeforge.external import source_snapshot
+                fingerprints.append(source_snapshot(recipe)["digest"])
+            elif recipe["provider"] in ("shapeic-cellkit", "shapeic-cellkit-technology"):
+                from shapeforge.components import provider_stamp
+                fingerprints.append(provider_stamp(recipe))
         digest = hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()
         return document, digest
     except ProjectError:
@@ -87,6 +101,7 @@ def interface(path):
     return [(name, document["parameters"][name], values[name]) for name in names]
 
 
+@runtime.provider
 def generate_project(source, overrides, pdk, parameters=None):
     from shapeforge.components import GeneratedComponent, dependency_versions
     from shapeforge.project import prepare_document, _geometry_signature
@@ -102,6 +117,13 @@ def generate_project(source, overrides, pdk, parameters=None):
     effective = resolve_overrides(overrides, parameters or {}, names)
     document["parameters"].update(effective)
     arguments = {name: resolve_value(name, document["parameters"]) for name in names}
+    versions = dependency_versions()
+    variant = runtime.cache_key([str(source), digest, pdk, arguments, versions])
+    if variant in _variants:
+        runtime.count("generation_cache_hits")
+        previous = _variants[variant]
+        return GeneratedComponent(previous.component, dict(previous.recipe, overrides=effective), previous.internal_parameters)
+    runtime.count("child_reconstructions")
     prepared = prepare_document(document, source)
     session = prepared.session
     internal = {name: value for name, value in session.resolved_parameters().items() if name not in names}
@@ -110,8 +132,8 @@ def generate_project(source, overrides, pdk, parameters=None):
     recipe = {"provider": PROVIDER, "source": str(source), "pdk": pdk,
               "public_parameters": names, "overrides": effective,
               "arguments": {n: arguments[n] for n in names},
-              "source_digest": hashlib.sha256(source.read_bytes()).hexdigest(),
-              "dependency_digest": digest, "versions": dependency_versions()}
+              "source_digest": hashlib.sha256(runtime.loaded(("project_bytes", str(source)), source.read_bytes)).hexdigest(),
+              "dependency_digest": digest, "versions": versions}
     pins = rows(session)
     # Build after staging so changes to providers as well as linked files invalidate reuse.
     geometry_recipe = {name: value for name, value in recipe.items() if name != "overrides"}
@@ -136,4 +158,6 @@ def generate_project(source, overrides, pdk, parameters=None):
         finally:
             gf.pdk._ACTIVE_PDK = previous_pdk
         _cache[key] = component
-    return GeneratedComponent(_cache[key], recipe, internal)
+    result = GeneratedComponent(_cache[key], recipe, internal)
+    _variants[variant] = result
+    return result

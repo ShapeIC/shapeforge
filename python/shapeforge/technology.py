@@ -12,6 +12,7 @@ import traceback
 import gdsfactory as gf
 
 from shapeforge.external import resolve_arguments
+from shapeforge import runtime
 
 PROVIDER = "shapeic-cellkit-technology"
 _constructors = {
@@ -87,6 +88,10 @@ def resolve_inputs(generator, values, parameters, pdk="ihp-sg13g2", defaults=Fal
 
 
 def _module(catalog):
+    return runtime.loaded(("technology", str(catalog.root), catalog.pdk), lambda: _load_module(catalog))
+
+
+def _load_module(catalog):
     path = catalog.root / "technologies" / catalog.pdk / "pcells.py"
     if not path.is_file():
         raise ValueError(f"CellKit technology PCells are missing: {path}.")
@@ -133,6 +138,7 @@ def available_technology_pcells(catalog):
     return {"Technology — " + name: name for name in _constructors if name != "project_port"}
 
 
+@runtime.provider
 def generate_technology(generator, values, pdk="ihp-sg13g2", parameters=None):
     from shapeforge.components import GeneratedComponent, _generated, cellkit_catalog, dependency_versions
     arguments = resolve_inputs(generator, values, parameters or {}, pdk, defaults=True)
@@ -149,8 +155,9 @@ def generate_technology(generator, values, pdk="ihp-sg13g2", parameters=None):
               "versions": versions, "implementation_digest": digest,
               "technology_digest": catalog.technology_digest, "technology_revision": catalog.technology().revision,
               "layout_policy": module.LAYOUT_POLICY}
-    key = json.dumps(recipe, sort_keys=True, allow_nan=False)
+    key = runtime.cache_key(recipe, (str(catalog.root),))
     if key not in _generated:
+        runtime.count("generator_executions")
         prefix = "SFTECH_" + hashlib.sha256(key.encode()).hexdigest()[:20]
         original_name, previous_pdk = module._cell_name, gf.pdk._ACTIVE_PDK
         previous_cells = {cell.cell_index() for cell in gf.kcl.layout.each_cell()}

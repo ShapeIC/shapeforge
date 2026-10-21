@@ -3,11 +3,11 @@ import math
 import os
 from pathlib import Path
 from uuid import uuid4
-from shapeforge.components import (generate_cellkit, resolve_geometry, generate_inputs,
-                                  input_definition, validate_input_definition, input_expressions)
+from shapeforge.components import (generate_cellkit, resolve_geometry, input_definition, input_expressions)
 from shapeforge.parameters import parameter_definition, references, resolve_parameters, resolve_value
 
 import json
+from shapeforge import runtime
 
 class Session:
     def __init__(self, cellview, cell, grid_um=0.005):
@@ -34,6 +34,9 @@ class Session:
         self._evaluation = None
         self.project_path = None
         self.port_markers = []
+        self._sources, self._nodes, self._geometry_aux, self._bounds = {}, {}, {}, {}
+        self._node_environment = None
+        self.performance = {"counts": {}, "seconds": {}}
 
     def validate(self):
         if not self.cellview.is_valid():
@@ -55,6 +58,7 @@ class Session:
         self.validate()
         return self.cell.property("shapeforge.pdk") or os.environ.get("SHAPEFORGE_PDK", "ihp-sg13g2")
 
+    @runtime.operation(refresh=True)
     def insert_primitive(self, primitive, geometry, pdk=None):
         """Generate a catalog primitive and insert it with its effective recipe."""
         self.validate()
@@ -72,6 +76,7 @@ class Session:
         generated = generate_cellkit(primitive, resolve_geometry(geometry, self.parameters()), pdk=pdk)
         return self.insert_generated(generated, geometry)
 
+    @runtime.operation(refresh=True)
     def insert_external_pcell(self, reference, arguments):
         from shapeforge.external import generate_external
         self.validate()
@@ -83,6 +88,7 @@ class Session:
         arguments = {**generated.recipe["arguments"], **arguments}
         return self.insert_generated(generated, arguments)
 
+    @runtime.operation(refresh=True)
     def insert_technology_pcell(self, generator, arguments):
         if generator == "project_port":
             raise ValueError("Use Add Project Port to define the project interface.")
@@ -203,8 +209,9 @@ class Session:
             raise RuntimeError("The selected instance needs a recorded generator recipe and linked component.")
         return instance, recipe
 
+    @runtime.operation()
     def edit_primitive_parameters(self, geometry, source=None):
-        """Replace only the selected instance's component; keep its identity and transform."""
+        """Edit generator inputs and affected dependents while preserving identity."""
         instance, recipe = self.selected_primitive_instance()
         if instance.property("shapeforge.array_member") is not None:
             raise ValueError("Array repetitions inherit geometry. Edit the base instance or dissolve the array.")
@@ -215,67 +222,31 @@ class Session:
             return True
         if not self.layout.is_editable():
             raise RuntimeError("Open KLayout in editor mode: klayout -e")
-        from shapeforge.project import _geometry_signature
-        old_id = self.component_id_for_instance(instance)
-        old_source = self.components[old_id]
-        old_cell = self.layout.cell(instance.cell_index)
-        if _geometry_signature(old_cell, self.layout.dbu) != _geometry_signature(old_source.kdb_cell, self.layout.dbu):
-            raise RuntimeError("This component was edited manually. Its recipe cannot preserve those edits.")
         if source is not None:
             if recipe["provider"] != "shapeforge-project":
                 raise ValueError("Relink requires a linked project instance.")
             recipe = dict(recipe, source=str(Path(source).resolve()))
-        from shapeforge.technology import is_via_stack
-        if recipe["provider"] == "shapeforge-project" or self.has_measurements():
-            from shapeforge.evaluation import Evaluation
-            identity = instance.property("shapeforge.instance_id")
-            planned, updates = Evaluation(self, input_replacements={identity: geometry},
-                                          recipe_replacements={identity: recipe}).plan()
-            view = self.cellview.view()
-            self.hide_ports()
-            view.cancel()
-            view.transaction("ShapeForge: edit primitive parameters")
-            try:
-                self.apply_regeneration_plan(planned, updates)
-                current = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == identity)
-                self.set_geometry_definition(current, geometry, recipe["provider"])
-            finally:
-                view.commit()
-            view.add_missing_layers()
-            return True
-        elif is_via_stack(recipe):
-            identity = instance.property("shapeforge.instance_id")
-            planned = self.primitive_update_plan(input_replacements={identity: geometry})
-            generated = planned.get(identity) or generate_inputs(
-                recipe, self.resolve_via_inputs(geometry, instance.dcplx_trans.mag, planned), self.parameters())
-        else:
-            generated = generate_inputs(recipe, geometry, self.parameters())
-        new_definition = input_definition(geometry, recipe["provider"])
+            runtime.current().refresh = True
+            runtime.current().seen.clear()
+        from shapeforge.evaluation import Evaluation
+        identity = instance.property("shapeforge.instance_id")
+        planner = Evaluation(self, input_replacements={identity: geometry}, recipe_replacements={identity: recipe})
+        planned, updates = planner.plan()
+        planner.check_original(identity)
         raw = instance.property("shapeforge.geometry_parameters")
-        old_definition = None if raw is None else json.loads(raw)
-        if generated.recipe == recipe and generated.component is old_source and new_definition == old_definition:
+        definition = input_definition(geometry, recipe["provider"])
+        if not planned and not updates and definition == (json.loads(raw) if raw else None):
             return False
-        component_id = str(uuid4())
-        serialized = json.dumps(generated.recipe, allow_nan=False)
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
         view.transaction("ShapeForge: edit primitive parameters")
         try:
-            target = self.layout.create_cell(f"SF_{recipe.get('primitive', recipe.get('function', recipe.get('generator', 'component')))}_{component_id[:8]}")
-            target.copy_tree(generated.component.kdb_cell)
-            target.set_property("shapeforge.component_id", component_id)
-            target.set_property("shapeforge.component_recipe", serialized)
-            # Repoint the existing instance, preserving its transform, ID,
-            # placement and every other instance property. Shared source cells
-            # and recipes stay alive so undo/redo can restore either variant.
-            instance.cell_index = target.cell_index()
-            instance.set_property("shapeforge.component_id", component_id)
-            self.set_geometry_definition(instance, geometry, recipe["provider"])
+            self.apply_regeneration_plan(planned, updates)
+            current = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == identity)
+            self.set_geometry_definition(current, geometry, recipe["provider"])
         finally:
             view.commit()
-        self.components[component_id] = generated.component
-        self.component_recipes[component_id] = generated.recipe
         view.add_missing_layers()
         return True
 
@@ -291,86 +262,22 @@ class Session:
             instance.set_property("shapeforge.geometry_parameters", json.dumps(definition, allow_nan=False))
 
     def primitive_update_plan(self, input_replacements=None, recipe_replacements=None):
-        if self.has_measurements():
-            from shapeforge.evaluation import Evaluation
-            return Evaluation(self, input_replacements=input_replacements, recipe_replacements=recipe_replacements).plan()[0]
-        from shapeforge.project_links import project_scope
-        with project_scope(self.project_path):
-            return self._primitive_update_plan(input_replacements, recipe_replacements)
+        return self.plan_change(input_replacements=input_replacements, recipe_replacements=recipe_replacements)[0]
 
-    def _primitive_update_plan(self, input_replacements=None, recipe_replacements=None):
-        objects = self.placement_objects(resolve_dimensions=False)
-        from shapeforge.arrays import collect
-        collect(objects, self.parameters(), validate_values=False)
-        updates = {}
-        from shapeforge.project import _geometry_signature
-        from shapeforge.dimensions import width_references
-        visiting, done = set(), set()
-        def visit(object_id):
-            if object_id in done:
-                return
-            if object_id in visiting:
-                raise ValueError(f"Dimension generation cycle detected at {object_id}.")
-            if object_id not in objects or objects[object_id]["type"] != "instance":
-                raise ValueError(f"Port width reference requires a linked instance: {object_id}.")
-            visiting.add(object_id)
-            item = objects[object_id]
-            instance = item["instance"]
-            member = item.get("array_member")
-            if member is not None:
-                owner = member["owner_id"]
-                visit(owner)
-                from shapeforge.components import GeneratedComponent
-                source = objects[owner]["instance"]
-                component_id = self.component_id_for_instance(source)
-                generated = updates.get(owner) or GeneratedComponent(self.components[component_id], self.component_recipes[component_id])
-                current_id = self.component_id_for_instance(instance)
-                if generated.component is not self.components.get(current_id) or generated.recipe != self.component_recipes.get(current_id):
-                    updates[object_id] = generated
-                visiting.remove(object_id)
-                done.add(object_id)
-                return
-            raw = instance.property("shapeforge.geometry_parameters")
-            replacement = (input_replacements or {}).get(object_id)
-            definition = json.loads(raw) if raw is not None else None
-            component_id = self.component_id_for_instance(instance)
-            recipe = (recipe_replacements or {}).get(object_id, self.component_recipes.get(component_id))
-            if replacement is not None:
-                definition = input_definition(replacement, recipe["provider"]) or {
-                    "version": 1 if recipe["provider"] == "shapeic-cellkit" else 2, "values": replacement}
-            if definition is not None:
-                if recipe is None or recipe.get("provider") not in ("shapeic-cellkit", "external-python", "shapeic-cellkit-technology", "shapeforge-project"):
-                    raise ValueError(f"Instance {object_id} needs a recorded generator recipe.")
-                validate_input_definition(definition, recipe, self.parameters())
-                for ref in width_references(definition["values"]):
-                    visit(ref["reference_id"])
-                values = definition["values"]
-                if definition["version"] == 3:
-                    values = self.resolve_via_inputs(values, instance.dcplx_trans.mag, updates)
-                generated = generate_inputs(recipe, values, self.parameters())
-                if generated.recipe != self.component_recipes.get(component_id) or generated.component is not self.components[component_id]:
-                    if _geometry_signature(self.layout.cell(instance.cell_index), self.layout.dbu) != _geometry_signature(self.components[component_id].kdb_cell, self.layout.dbu):
-                        raise ValueError(f"Instance {object_id} was edited manually; its recipe cannot preserve those edits.")
-                    updates[object_id] = generated
-            visiting.remove(object_id)
-            done.add(object_id)
-        for object_id, item in objects.items():
-            if item["type"] != "instance":
-                continue
-            visit(object_id)
-        return updates
+    @runtime.operation()
+    def plan_change(self, **changes):
+        from shapeforge.evaluation import Evaluation
+        if changes.get("refresh_sources") and not runtime.current().refresh:
+            runtime.current().refresh = True
+            runtime.current().seen.clear()
+        return Evaluation(self, **changes).plan()
 
     def regeneration_plan(self, via_center_replacement=None):
         from shapeforge.project_ports import validate_names
         validate_names(self)
-        if self.has_measurements():
-            from shapeforge.evaluation import Evaluation
-            return Evaluation(self, via_center_replacement=via_center_replacement).plan()
-        components = self.primitive_update_plan()
-        updates, _ = self.placement_plan(component_replacements=components,
-                                         via_center_replacement=via_center_replacement)
-        return components, updates
+        return self.plan_change(via_center_replacement=via_center_replacement)
 
+    @runtime.operation()
     def define_via_center(self, position):
         """Set independent world X/Y centers and regenerate in one transaction."""
         from shapeforge.technology import is_via_stack
@@ -389,6 +296,8 @@ class Session:
         identity = instance.property("shapeforge.instance_id")
         serialized = None if position is None else json.dumps(position, allow_nan=False)
         components, updates = self.regeneration_plan(via_center_replacement=(identity, position))
+        if not components and not updates and (json.loads(raw_center) if (raw_center := instance.property("shapeforge.via_center")) else None) == position:
+            return
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()
@@ -405,23 +314,49 @@ class Session:
         view.add_missing_layers()
 
     def apply_regeneration_plan(self, components, updates):
-        for object_id, generated in components.items():
-            current = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == object_id)
-            if current.property("shapeforge.array_member") is not None:
-                continue  # Reuse the updated base cell when applying repetitions.
-            component_id = str(uuid4())
-            target = self.layout.create_cell(f"SF_{generated.recipe.get('primitive', generated.recipe.get('function', generated.recipe.get('generator', 'component')))}_{component_id[:8]}")
-            target.copy_tree(generated.component.kdb_cell)
-            target.set_property("shapeforge.component_id", component_id)
-            target.set_property("shapeforge.component_recipe", json.dumps(generated.recipe, allow_nan=False))
-            instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == object_id)
-            instance.cell_index = target.cell_index()
-            instance.set_property("shapeforge.component_id", component_id)
-            from shapeforge.instance_parameters import store
-            store(instance, generated)
-            self.components[component_id] = generated.component
-            self.component_recipes[component_id] = generated.recipe
-        self.apply_placement_updates(updates)
+        from shapeforge.changes import NativeIndex
+        from shapeforge.instance_parameters import store
+        index = NativeIndex(self)
+        plan = getattr(components, "evaluation", None) or getattr(updates, "evaluation", None)
+        imported = {}
+        self._apply_index = index
+        try:
+            with runtime.phase("application"):
+                for object_id, generated in components.items():
+                    current = index.get(object_id)
+                    if current.property("shapeforge.array_member") is not None:
+                        continue
+                    old_id = self.component_id_for_instance(current)
+                    old = self.components.get(old_id)
+                    same = generated.component is old
+                    if not same and old is not None and plan is not None:
+                        same = plan.signature(old.kdb_cell) == plan.signature(generated.component.kdb_cell)
+                    component_id = str(uuid4())
+                    if same:
+                        target = self.layout.cell(current.cell_index)
+                    else:
+                        key = id(generated.component)
+                        target = imported.get(key)
+                        if target is None:
+                            target = self.layout.create_cell(f"SF_COMPONENT_{component_id[:8]}")
+                            with runtime.phase("geometry_copy"):
+                                target.copy_tree(generated.component.kdb_cell)
+                            runtime.count("component_copies")
+                            target.set_property("shapeforge.component_id", component_id)
+                            target.set_property("shapeforge.component_recipe", json.dumps(generated.recipe, allow_nan=False))
+                            imported[key] = target
+                        current.cell_index = target.cell_index()
+                    current.set_property("shapeforge.component_id", component_id)
+                    store(current, generated)
+                    self.components[component_id] = generated.component
+                    self.component_recipes[component_id] = generated.recipe
+                    runtime.count("component_updates")
+                self.apply_placement_updates(updates)
+            if plan is not None and plan.source_state is not None:
+                self._sources = dict(plan.source_state.entries)
+                self.performance = {"counts": dict(plan.source_state.counts), "seconds": dict(plan.source_state.seconds)}
+        finally:
+            self._apply_index = None
 
     def selection_info(self):
         self.validate()
@@ -850,6 +785,7 @@ class Session:
                     raise RuntimeError("Both components must have ports.")
         return candidates
 
+    @runtime.operation()
     def place_by_ports(self, a, port_a, b, port_b, dx, dy, kind="ports", direction=None, alignment=None):
         self.validate()
 
@@ -881,6 +817,8 @@ class Session:
         updates, offsets = self.placement_plan(
             replacement=(b["id"], relation), component_replacements=components
         )
+        if not components and not updates and b["object"].property("shapeforge.placement") == serialized:
+            return offsets[b["id"]]
 
         instances = self.placement_instances()
         target = instances[b["id"]]["object"]
@@ -968,6 +906,7 @@ class Session:
         """Compatibility alias: return all managed placement objects."""
         return self.placement_objects()
 
+    @runtime.operation(refresh=True)
     def regenerate_placement(self):
         self.validate()
         if not self.layout.is_editable():
@@ -1133,9 +1072,17 @@ class Session:
         if self._evaluation is not None:
             return self._evaluation.parameters
         from shapeforge.parameters import ParameterValues
-        from shapeforge.instance_parameters import value
+        from shapeforge.instance_parameters import rows
+        imported = None
+        def internal(reference):
+            nonlocal imported
+            if imported is None:
+                imported = rows(self)
+            if reference not in imported:
+                raise ValueError(f"Missing internal parameter: {reference}. Regenerate after updating its source.")
+            return imported[reference]
         return ParameterValues(self.parameter_definitions(), measurement=self.current_measurement,
-                               internal=lambda ref: value(self, ref))
+                               internal=internal)
 
     def parameter_definitions(self):
         self.validate()
@@ -1148,12 +1095,14 @@ class Session:
         raw = self.cell.property(PUBLIC_PROPERTY)
         return validate_public(json.loads(raw) if raw else [], self.parameters())
 
+    @runtime.operation(refresh=True)
     def insert_project(self, source, overrides):
         from shapeforge.project_links import generate_project, project_scope
         with project_scope(self.project_path):
             generated = generate_project(source, overrides, self.pdk, self.parameters())
         return self.insert_generated(generated, overrides)
 
+    @runtime.operation()
     def set_parameter(self, name, value_um, external=None):
         self.validate()
 
@@ -1166,7 +1115,10 @@ class Session:
         from shapeforge.instance_parameters import instances
         if name in instances(self):
             raise ValueError(f"Parameter name conflicts with linked instance: {name}")
-        parameters[name] = parameter_definition(value_um)
+        definition = parameter_definition(value_um)
+        if name in parameters and parameters[name] == definition and (external is None or external == (name in self.public_parameters())):
+            return
+        parameters[name] = definition
         from shapeforge.parameters import derived_parameters
         derived = derived_parameters(parameters)
         if derived:
@@ -1501,143 +1453,13 @@ class Session:
 
     def placement_plan(self, replacement=None, box_replacement=None, component_replacements=None,
                        via_center_replacement=None, array_replacement=None):
-        """Plan dimensions, referenced extents and placement without mutation."""
-        if self.has_measurements():
-            from shapeforge.evaluation import Evaluation
-            planner = Evaluation(self, replacement=replacement, box_replacement=box_replacement,
-                component_replacements=component_replacements, via_center_replacement=via_center_replacement,
-                array_replacement=array_replacement)
-            components, updates = planner.plan()
-            if component_replacements is not None:
-                component_replacements.clear()
-                component_replacements.update(components)
-            return updates, planner.offsets
-        objects = self.placement_objects(box_replacement=box_replacement, component_replacements=component_replacements or {})
-        if via_center_replacement is not None:
-            identity, position = via_center_replacement
-            if identity not in objects:
-                raise RuntimeError("The target via stack no longer exists.")
-            objects[identity]["via_center"] = position
-        for object_id, generated in (component_replacements or {}).items():
-            objects[object_id]["component"] = generated.component
-            objects[object_id]["local_box"] = generated.component.kdb_cell.dbbox()
-        from shapeforge.arrays import prepare, member_transform
-        removals = prepare(self, objects, array_replacement)
-        relations = {}
-        for object_id, item in objects.items():
-            raw = item["object"].property("shapeforge.placement")
-            if raw is not None:
-                relation = json.loads(raw)
-                if relation.get("version") != 1:
-                    raise RuntimeError("Unsupported placement version.")
-                relations[object_id] = relation
-        if replacement is not None:
-            target_id, relation = replacement
-            if target_id not in objects:
-                raise RuntimeError("The target object no longer exists.")
-            relations[target_id] = relation
-        if box_replacement is not None and box_replacement[0] not in objects:
-            raise RuntimeError("The target box no longer exists.")
-
-        dependencies = {key: set() for key in objects}
-        for identity, item in objects.items():
-            if item.get("array_member") is not None:
-                if identity in relations:
-                    raise ValueError("Array controls this repetition's position. Edit the base or dissolve the array.")
-                dependencies[identity].add(item["array_member"]["owner_id"])
-        for target_id, item in objects.items():
-            if item["type"] == "box" and item.get("array_member") is None:
-                definition = item["definition"]
-                position_refs = self.box_position_references(definition)
-                if (position_refs or any(f"{axis}_center" in definition for axis in ("x", "y"))) and target_id in relations:
-                    raise RuntimeError(
-                        "Box extents or center control its position. Remove its "
-                        "placement relation before defining extents or center."
-                    )
-                dependencies[target_id].update(
-                    ref["reference_id"] for ref in position_refs)
-        for target_id, item in objects.items():
-            position = item.get("via_center") or item.get("port_position")
-            if position and any(f"{axis}_center" in position for axis in ("x", "y")):
-                if target_id in relations:
-                    raise ValueError("Center coordinates control this object's position. Remove placement or free both coordinates first.")
-                dependencies[target_id].update(ref["reference_id"] for ref in self.box_position_references(position))
-        for target_id, relation in relations.items():
-            reference_id = relation["reference_id"]
-            dependencies[target_id].add(reference_id)
-            if relation.get("kind", "ports") == "ports":
-                for object_id in (reference_id, target_id):
-                    if object_id not in objects:
-                        raise RuntimeError(f"Missing reference object: {object_id}")
-                    item = objects[object_id]
-                    if item["type"] != "instance" or item["component"] is None:
-                        raise RuntimeError("Port placement requires linked instances.")
-        for refs in dependencies.values():
-            for reference_id in refs:
-                if reference_id not in objects:
-                    raise RuntimeError(f"Missing reference object: {reference_id}")
-
-        transforms = {key: self.object_transform(item)
-                      for key, item in objects.items()}
-        visiting, completed, path, order, offsets = set(), set(), [], [], {}
-        def visit(object_id):
-            if object_id in completed:
-                return
-            if object_id in visiting:
-                cycle = path[path.index(object_id):] + [object_id]
-                raise RuntimeError("Placement cycle detected:\n" + " -> ".join(cycle))
-            visiting.add(object_id)
-            path.append(object_id)
-            for reference_id in sorted(dependencies[object_id]):
-                visit(reference_id)
-            item = objects[object_id]
-            if item.get("array_member") is not None:
-                owner = item["array_member"]["owner_id"]
-                if item["type"] == "box":
-                    item["local_box"] = objects[owner]["local_box"]
-                    item["definition"] = {"version": 1, "width_um": item["local_box"].width(), "height_um": item["local_box"].height()}
-                transforms[object_id] = member_transform(self, item, objects[owner], transforms[owner])
-            if item["type"] == "box" and item.get("array_member") is None:
-                transforms[object_id] = self.box_extent_transform(
-                    item, objects, transforms)
-            position = item.get("via_center") or item.get("port_position")
-            governed = position and any(f"{axis}_center" in position for axis in ("x", "y"))
-            if governed:
-                transform = transforms[object_id]
-                coordinates = [transform.disp.x, transform.disp.y]
-                # Via centers refer to the visible bounding box, independent of
-                # the generator origin, rotation, reflection and magnification.
-                center_offset = [0, 0]
-                if item.get("via_center"):
-                    linear = pya.DCplxTrans(transform.mag, transform.angle, transform.is_mirror(), 0, 0)
-                    bounds = self.placement_bbox(item, linear)
-                    center_offset = [(bounds.left + bounds.right) / 2, (bounds.bottom + bounds.top) / 2]
-                for index, axis in enumerate(("x", "y")):
-                    if f"{axis}_center" in position:
-                        value = position[f"{axis}_center"]
-                        coordinate = (self.extent_coordinate(value, axis, objects, transforms)
-                                      if isinstance(value, dict) else self.resolve_offset(value))
-                        coordinates[index] = self.dbu_to_um(self.snap_um_to_dbu(coordinate - center_offset[index]))
-                transforms[object_id] = pya.DCplxTrans(transform.mag, transform.angle, transform.is_mirror(), *coordinates)
-            relation = relations.get(object_id)
-            if relation is not None:
-                reference_id = relation["reference_id"]
-                transform, dx, dy = self.relation_transform(
-                    objects[reference_id], item, relation,
-                    transform_a=transforms[reference_id],
-                    transform_b=transforms[object_id])
-                transforms[object_id] = transform
-                offsets[object_id] = (dx, dy)
-            if item["type"] == "box" or relation is not None or governed or item.get("array") is not None or item.get("array_member") is not None:
-                order.append(object_id)
-            path.pop()
-            visiting.remove(object_id)
-            completed.add(object_id)
-        for object_id in sorted(objects):
-            visit(object_id)
-        updates = [(objects[key], transforms[key]) for key in order]
-        updates.extend(({"type": "array_remove", "id": identity}, None) for identity in sorted(removals))
-        return updates, offsets
+        components, updates = self.plan_change(replacement=replacement, box_replacement=box_replacement,
+            component_replacements=component_replacements, via_center_replacement=via_center_replacement,
+            array_replacement=array_replacement)
+        if component_replacements is not None:
+            component_replacements.clear()
+            component_replacements.update(components)
+        return updates, updates.evaluation.offsets
 
     def placement_bbox(self, item, transform):
         if "local_box" in item:
@@ -2215,8 +2037,11 @@ class Session:
             if item["type"] == "array_remove":
                 continue
             if item["type"] == "instance":
-                instance = next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == item["id"])
-                instance.dcplx_trans = transform
+                index = getattr(self, "_apply_index", None)
+                instance = index.get(item["id"]) if index else next(i for i in self.cell.each_inst() if i.property("shapeforge.instance_id") == item["id"])
+                if instance.dcplx_trans != transform:
+                    instance.dcplx_trans = transform
+                    runtime.count("transform_writes")
             else:
                 x = self.um_to_dbu(transform.disp.x)
                 y = self.um_to_dbu(transform.disp.y)
@@ -2224,7 +2049,10 @@ class Session:
                 height = self.um_to_dbu(item["local_box"].height())
                 from shapeforge.arrays import locate_box
                 shape, _ = locate_box(self, item["id"])
-                shape.box = pya.Box(x, y, x + width, y + height)
+                box = pya.Box(x, y, x + width, y + height)
+                if shape.box != box:
+                    shape.box = box
+                    runtime.count("box_writes")
 
     def selected_placement_object(self, obj, objects):
         if obj.top != self.cell.cell_index():
@@ -2419,6 +2247,7 @@ class Session:
             raise RuntimeError("The box has no ShapeForge ID.")
         return shape, object_id, json.loads(raw), objects
 
+    @runtime.operation()
     def define_box_extents(self, definition):
         definition = dict(definition)
         from shapeforge.dimensions import box_version
@@ -2431,8 +2260,9 @@ class Session:
             raise ValueError("Array boxes inherit size and position. Edit the base or dissolve the array.")
         self.validate_box_definition(definition)
         serialized = json.dumps(definition, allow_nan=False)
-        components = self.primitive_update_plan()
-        updates, _ = self.placement_plan(box_replacement=(object_id, definition), component_replacements=components)
+        components, updates = self.plan_change(box_replacement=(object_id, definition))
+        if not components and not updates and shape.property("shapeforge.box") == serialized:
+            return
         view = self.cellview.view()
         self.hide_ports()
         view.cancel()

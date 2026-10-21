@@ -65,7 +65,8 @@ class ParameterEditor:
             definitions = session.parameters()
             from shapeforge.instance_parameters import rows
             imported = rows(session)
-            values = session.resolved_parameters()
+            from shapeforge.parameters import resolve_parameters
+            values = resolve_parameters(definitions)
             public = session.public_parameters()
             status = f"{session.cell.name} — parameters in µm"
             available = session.layout.is_editable()

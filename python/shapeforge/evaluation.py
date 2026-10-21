@@ -3,8 +3,11 @@
 from contextlib import contextmanager
 import json
 import math
+from time import perf_counter
 
 import pya
+from shapeforge import runtime
+from shapeforge.incremental import Memo, Components, Updates, EvaluationError
 
 from shapeforge.parameters import (ParameterValues, validate_definitions, is_measure,
                                    validate_measure, expression_tree, _evaluate)
@@ -13,7 +16,7 @@ from shapeforge.parameters import (ParameterValues, validate_definitions, is_mea
 class Evaluation:
     def __init__(self, session, definitions=None, input_replacements=None, recipe_replacements=None,
                  replacement=None, box_replacement=None, component_replacements=None,
-                 via_center_replacement=None, array_replacement=None):
+                 via_center_replacement=None, array_replacement=None, refresh_sources=False, full=False):
         self.session = session
         definitions = session.parameter_definitions() if definitions is None else definitions
         validate_definitions(definitions)
@@ -22,6 +25,8 @@ class Evaluation:
         self.parameters = ParameterValues(definitions, lookup=self.parameter)
         self.objects = session.placement_objects(raw=True, box_replacement=box_replacement)
         self.inputs, self.recipes = input_replacements or {}, recipe_replacements or {}
+        self.refresh_sources = refresh_sources or bool(runtime.current() and runtime.current().refresh)
+        self.full = full
         # Candidate position/box/array changes can affect measurements and hence
         # invalidate components computed before the candidate was supplied.
         candidate = any(value is not None for value in (replacement, box_replacement, via_center_replacement, array_replacement))
@@ -39,12 +44,88 @@ class Evaluation:
             identity, relation = replacement
             self.item(identity)
             self.relations[identity] = relation
-        self.cache, self.path, self.components, self.offsets = {}, [], {}, {}
+        self.components, self.offsets = Components(), {}
+        self.components.evaluation = self
+        self.source_state = None
+        self._signatures = {}
+        self.geometry_aux = dict(getattr(session, "_geometry_aux", {}))
+        environment = (session.layout.dbu, session.grid_um, session.pdk)
+        previous = (getattr(session, "_nodes", {}) if not full and not self.refresh_sources
+                    and getattr(session, "_node_environment", None) == environment else {})
+        self.environment = environment
+        self.memo = Memo(previous, self.intrinsic)
+        self.cache, self.path = self.memo.values, self.memo.path
         self.measured_ids = set()
+
+    def intrinsic(self, key):
+        kind, identity, *rest = key
+        if kind == "parameter":
+            return json.dumps(self.parameters.get(identity), sort_keys=True)
+        item = self.objects.get(identity)
+        if item is None:
+            return "missing"
+        if kind == "internal parameter":
+            return tuple(sorted(name for name, value in self.namespaces.items() if value == identity))
+        if kind == "linear":
+            if item.get("array_member"):
+                return item["array_member"]["owner_id"]
+            transform = self.session.object_transform(item)
+            return transform.mag, transform.angle, transform.is_mirror()
+        if kind == "box size":
+            axis = rest[0]
+            definition = item["definition"]
+            return json.dumps([definition.get(f"{axis}_extents"),
+                               definition.get("width_um" if axis == "x" else "height_um")], sort_keys=True)
+        if kind == "box validation":
+            return json.dumps(item["definition"], sort_keys=True)
+        if kind == "position validation":
+            return json.dumps([item.get("via_center"), item.get("port_position"),
+                               (item.get("recipe") or {}).get("generator")], sort_keys=True)
+        if kind == "geometry":
+            if item.get("array_member") is not None:
+                return json.dumps(item["array_member"], sort_keys=True)
+            if item["type"] == "box":
+                return json.dumps([item.get("array_member"), {k: v for k, v in item["definition"].items() if k not in ("version", "x_center", "y_center")}], sort_keys=True)
+            instance = item["instance"]
+            if not hasattr(instance, "cell_index"):
+                return json.dumps(item.get("array_member"), sort_keys=True)
+            return (self.session.component_id_for_instance(instance), instance.cell_index,
+                    self.session.layout.cell(instance.cell_index).dbbox().to_s(),
+                    json.dumps(self.inputs.get(identity), sort_keys=True),
+                    instance.property("shapeforge.geometry_parameters"),
+                    json.dumps(self.recipes.get(identity), sort_keys=True),
+                    instance.property("shapeforge.internal_parameters"),
+                    json.dumps(item.get("array_member"), sort_keys=True), self.source_version(item.get("recipe")))
+        if kind == "position":
+            return (self.session.object_transform(item).to_s(), json.dumps([
+                item.get("definition"), self.relations.get(identity), item.get("via_center"), item.get("port_position"),
+                item.get("array"), item.get("array_member")], sort_keys=True))
+        return item["type"]
+
+    def source_version(self, recipe):
+        if not recipe or self.source_state is None:
+            return None
+        entries = self.source_state.entries
+        provider = recipe["provider"]
+        if provider == "shapeforge-project":
+            from pathlib import Path
+            value = entries.get(("project_tree", str(Path(recipe["source"]).resolve())))
+            return value[1] if value else recipe["dependency_digest"]
+        if provider == "external-python":
+            value = entries.get(("external_sources", recipe["library"], recipe["pdk"]))
+            return value["digest"] if value else recipe["implementation_digest"]
+        if provider in ("shapeic-cellkit", "shapeic-cellkit-technology"):
+            if provider == "shapeic-cellkit":
+                value = entries.get(("primitive", recipe["pdk"], recipe["primitive"]))
+                return value.implementation_digest if value else recipe["implementation_digest"]
+            catalog = entries.get(("catalog", recipe["pdk"]))
+            value = entries.get(("technology", str(catalog.root), recipe["pdk"])) if catalog else None
+            return value[1] if value else recipe["implementation_digest"]
+        return None
 
     def item(self, identity):
         if identity not in self.objects:
-            raise ValueError(f"Missing reference object: {identity}.")
+            raise EvaluationError(f"Missing reference object: {identity}.")
         return self.objects[identity]
 
     @contextmanager
@@ -53,26 +134,15 @@ class Evaluation:
         previous = self.session._evaluation
         self.session._evaluation = self
         try:
-            with project_scope(self.session.project_path):
-                yield
+            with runtime.scope(self.session, refresh=self.refresh_sources) as sources:
+                self.source_state = sources
+                with project_scope(self.session.project_path):
+                    yield
         finally:
             self.session._evaluation = previous
 
     def node(self, key, compute):
-        if key in self.cache:
-            return self.cache[key]
-        if key in self.path:
-            cycle = self.path[self.path.index(key):] + [key]
-            raise ValueError("Geometry dependency cycle detected: " + " → ".join(": ".join(k) for k in cycle))
-        if len(self.path) >= 128:
-            raise ValueError("Geometry dependency chain is too deep.")
-        self.path.append(key)
-        try:
-            result = compute()
-            self.cache[key] = result
-            return result
-        finally:
-            self.path.pop()
+        return self.memo.call(key, compute)
 
     def parameter(self, name):
         if "." in name:
@@ -98,11 +168,13 @@ class Evaluation:
                          else _evaluate(expression_tree(definition), self.parameter))
 
     def linear(self, identity):
-        item = self.item(identity)
-        if item.get("array_member") is not None:
-            return self.linear(item["array_member"]["owner_id"])
-        t = self.session.object_transform(item)
-        return pya.DCplxTrans(t.mag, t.angle, t.is_mirror(), 0, 0)
+        def compute():
+            item = self.item(identity)
+            if item.get("array_member") is not None:
+                return self.linear(item["array_member"]["owner_id"])
+            t = self.session.object_transform(item)
+            return pya.DCplxTrans(t.mag, t.angle, t.is_mirror(), 0, 0)
+        return self.node(("linear", identity), compute)
 
     def measure(self, definition):
         validate_measure(definition)
@@ -132,8 +204,7 @@ class Evaluation:
         return self.node(("measurement", identity, quantity, definition.get("port", "")), compute)
 
     def geometry(self, identity):
-        from shapeforge.components import generate_inputs, input_definition, validate_input_definition
-        from shapeforge.project import _geometry_signature
+        from shapeforge.components import generate_inputs, input_definition, validate_input_definition, effective_inputs
         item = self.item(identity)
         def compute():
             member = item.get("array_member")
@@ -141,15 +212,18 @@ class Evaluation:
                 component = self.geometry(member["owner_id"])
                 if item["type"] == "box":
                     item["local_box"] = self.item(member["owner_id"])["local_box"]
+                    self.geometry_aux[identity] = (None, item["local_box"].dup(), None)
                     return None
                 generated = self.components.get(member["owner_id"])
                 if generated is not None and hasattr(item["instance"], "cell_index"):
                     self.components[identity] = generated
                 item["component"] = component
                 item["local_box"] = self.item(member["owner_id"])["local_box"]
+                self.geometry_aux[identity] = (component, item["local_box"].dup(), generated)
                 return component
             if item["type"] == "box":
                 item["local_box"] = pya.DBox(0, 0, self.size(identity, "x"), self.size(identity, "y"))
+                self.geometry_aux[identity] = (None, item["local_box"].dup(), None)
                 return None
             instance = item["instance"]
             component_id = self.session.component_id_for_instance(instance)
@@ -162,34 +236,75 @@ class Evaluation:
                     "version": 1 if recipe["provider"] == "shapeic-cellkit" else 2,
                     "values": self.inputs[identity]}
             generated = self.forced.get(identity)
+            if definition is None and self.refresh_sources and recipe and recipe["provider"] != "shapeforge":
+                definition = {"version": 4 if recipe["provider"] == "shapeforge-project" else
+                              1 if recipe["provider"] == "shapeic-cellkit" else 2,
+                              "values": recipe.get("overrides", recipe.get("geometry", recipe.get("arguments")))}
             if generated is None and definition is not None:
                 validate_input_definition(definition, recipe, self.parameters)
                 values = definition["values"]
                 if definition["version"] == 3:
-                    values = self.session.resolve_via_inputs(values, instance.dcplx_trans.mag)
-                generated = generate_inputs(recipe, values, self.parameters)
+                    values = self.session.resolve_via_inputs(values, self.linear(identity).mag)
+                effective, previous = effective_inputs(recipe, values, self.parameters)
+                stamp_key = "dependency_digest" if recipe["provider"] == "shapeforge-project" else "implementation_digest"
+                unchanged_source = self.source_version(recipe) == recipe.get(stamp_key)
+                if not self.refresh_sources and identity not in self.recipes and effective == previous and unchanged_source:
+                    runtime.count("generation_reused_loaded")
+                else:
+                    runtime.count("provider_requests")
+                    with runtime.phase("generation"):
+                        generated = generate_inputs(recipe, values, self.parameters)
             if generated is not None:
-                from shapeforge.instance_parameters import outputs
-                changed_outputs = (generated.internal_parameters is not None and generated.internal_parameters != outputs(instance))
-                if generated.component is not old or generated.recipe != self.session.component_recipes.get(component_id) or changed_outputs:
-                    if old is None or _geometry_signature(self.session.layout.cell(instance.cell_index), self.session.layout.dbu) != _geometry_signature(old.kdb_cell, self.session.layout.dbu):
-                        raise ValueError(f"Instance {identity} was edited manually; its recipe cannot preserve those edits.")
-                    self.components[identity] = generated
-                if identity in self.inputs:
-                    self.components[identity] = generated
                 item["component"] = generated.component
             component = item["component"]
-            if identity in self.components:
+            if generated is not None and generated.component is not old:
                 # Measure the geometry as it will be copied at the session DBU.
-                scratch = pya.Layout()
-                scratch.dbu = self.session.layout.dbu
-                copied = scratch.create_cell("BOUNDS")
-                copied.copy_tree(component.kdb_cell)
-                item["local_box"] = copied.dbbox()
+                bounds = self.session._bounds
+                key = (id(component), self.session.layout.dbu)
+                if key not in bounds:
+                    scratch = pya.Layout()
+                    scratch.dbu = self.session.layout.dbu
+                    copied = scratch.create_cell("BOUNDS")
+                    runtime.count("bounds_copies")
+                    copied.copy_tree(component.kdb_cell)
+                    bounds[key] = (component, copied.dbbox())
+                item["local_box"] = bounds[key][1]
             else:
                 item["local_box"] = self.session.layout.cell(instance.cell_index).dbbox()
+            self.geometry_aux[identity] = (component, item["local_box"].dup(), generated)
             return component
-        return self.node(("geometry", identity), compute)
+        result = self.node(("geometry", identity), compute)
+        component, bounds, generated = self.geometry_aux[identity]
+        item["component"], item["local_box"] = component, bounds.dup()
+        if item.get("array_member") is not None:
+            owner = item["array_member"]["owner_id"]
+            self.geometry(owner)
+            generated = self.components.get(owner)
+        if generated is not None and item["type"] == "instance" and hasattr(item["instance"], "cell_index"):
+            from shapeforge.instance_parameters import outputs
+            instance = item["instance"]
+            component_id = self.session.component_id_for_instance(instance)
+            if (generated.component is not self.session.components.get(component_id)
+                    or generated.recipe != self.session.component_recipes.get(component_id)
+                    or generated.internal_parameters is not None and generated.internal_parameters != outputs(instance)):
+                self.check_original(identity)
+                self.components[identity] = generated
+        return result
+
+    def signature(self, cell):
+        from shapeforge.project import _geometry_signature
+        key = (cell.layout(), cell.cell_index(), self.session.layout.dbu)
+        if key not in self._signatures:
+            runtime.count("geometry_signatures")
+            self._signatures[key] = _geometry_signature(cell, self.session.layout.dbu)
+        return self._signatures[key]
+
+    def check_original(self, identity):
+        item = self.item(identity)
+        instance = item["instance"]
+        old = self.session.components.get(self.session.component_id_for_instance(instance))
+        if old is None or self.signature(self.session.layout.cell(instance.cell_index)) != self.signature(old.kdb_cell):
+            raise ValueError(f"Instance {identity} was edited manually; its recipe cannot preserve those edits.")
 
     def coordinate(self, reference, axis):
         identity = reference["reference_id"]
@@ -234,7 +349,7 @@ class Evaluation:
                 definition = item["definition"]
                 governed = any(definition.get(k) is not None for k in ("x_extents", "y_extents", "x_center", "y_center"))
                 if governed and relation is not None:
-                    raise ValueError("Box extents or center control its position. Remove placement first.")
+                    raise EvaluationError("Box extents or center control its position. Remove its placement relation first.")
                 coords = [transform.disp.x, transform.disp.y]
                 for index, axis in enumerate(("x", "y")):
                     extents = definition.get(f"{axis}_extents")
@@ -264,14 +379,21 @@ class Evaluation:
                     transform_a=self.position(reference), transform_b=transform)
                 self.offsets[identity] = (dx, dy)
             return transform
-        return self.node(("position", identity), compute)
+        result = self.node(("position", identity), compute)
+        if identity not in self.offsets and identity in self.relations:
+            # Offsets describe the requested relation, not a native wrapper.
+            self.offsets[identity] = (self.session.resolve_offset(self.relations[identity]["dx_um"]),
+                                      self.session.resolve_offset(self.relations[identity]["dy_um"]))
+        return result
 
     def plan(self):
+        started = perf_counter()
         from shapeforge.arrays import collect, prepare
         from shapeforge.project_ports import validate_position
         from shapeforge.technology import is_via_stack
         from shapeforge.project_ports import is_project_port
         with self.active():
+            runtime.count("plans" if self.source_state.owner is self.session else "child_plans")
             collect(self.objects, self.parameters, validate_values=False)
             for identity in list(self.objects):
                 self.geometry(identity)
@@ -280,21 +402,34 @@ class Evaluation:
                 raise ValueError("Cannot reduce the array: a removed repetition is referenced by a parameter.")
             # Positions already resolved through extent dependencies stay valid:
             # prepare preserves existing members and rejects referenced removals.
-            updates = []
+            updates = Updates()
+            updates.evaluation = self
             for identity, item in self.objects.items():
                 if item["type"] == "box" and item.get("array_member") is None:
-                    self.session.validate_box_definition(item["definition"])
-                for key, test in (("via_center", is_via_stack), ("port_position", is_project_port)):
-                    if item.get(key) is not None:
-                        if not test(item.get("recipe")):
-                            raise ValueError(f"Invalid {key} generator.")
-                        validate_position(item[key], self.parameters)
+                    self.node(("box validation", identity), lambda item=item: self.session.validate_box_definition(item["definition"]))
+                def validate(item=item):
+                    for key, test in (("via_center", is_via_stack), ("port_position", is_project_port)):
+                        if item.get(key) is not None:
+                            if not test(item.get("recipe")):
+                                raise ValueError(f"Invalid {key} generator.")
+                            validate_position(item[key], self.parameters)
+                if item.get("via_center") is not None or item.get("port_position") is not None:
+                    self.node(("position validation", identity), validate)
                 transform = self.position(identity)
                 if item["type"] == "box" or identity in self.relations or item.get("via_center") or item.get("port_position") or item.get("array") or item.get("array_member"):
                     updates.append((item, transform))
             for name in self.parameters:
                 self.parameter(name)
+            self.measured_ids.update(key[1] for key in self.memo.observed
+                                     if key[0] in ("measurement", "internal parameter"))
             if self.measured_ids & removals:
                 raise ValueError("Cannot reduce the array: a removed repetition is referenced by a parameter.")
             updates.extend(({"type": "array_remove", "id": identity}, None) for identity in sorted(removals))
+            from shapeforge.changes import changed_updates
+            updates[:] = changed_updates(self.session, updates, self.components)
+            self.session._nodes = {key: entry for key, entry in self.memo.entries.items() if key in self.memo.observed}
+            self.session._node_environment = self.environment
+            self.session._geometry_aux = {identity: value for identity, value in self.geometry_aux.items() if identity in self.objects}
+            self.source_state.seconds["evaluation"] = self.source_state.seconds.get("evaluation", 0) + perf_counter() - started
+            self.session.performance = {"counts": dict(self.source_state.counts), "seconds": dict(self.source_state.seconds)}
             return self.components, updates

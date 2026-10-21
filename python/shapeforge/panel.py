@@ -34,6 +34,7 @@ class ShapeForgePanel:
             callbacks = {name: getattr(ui, name) for name in ACTION_TITLES}
         self.callbacks = callbacks
         self.reference_picking = False
+        self._state_token = None
         self.signature, self.selection_key, self.context = None, None, None
         self.dock = pya.QDockWidget("ShapeForge", main_window)
         self.dock.objectName = "shapeforge_parameters"  # Keep the saved dock position.
@@ -71,6 +72,16 @@ class ShapeForgePanel:
     def refresh(self, *args):
         if self.dock._destroyed() or self.reference_picking:
             return
+        from shapeforge.view_state import token
+        try:
+            session = self.session_getter()
+            active = self.main_window.current_view() if hasattr(self.main_window, "current_view") else None
+            state = (token(session), active)
+            if state == self._state_token:
+                return
+            self._state_token = state
+        except Exception:
+            self._state_token = None
         self.parameters.refresh()
         self.ports.refresh()
         session = self.session_getter()

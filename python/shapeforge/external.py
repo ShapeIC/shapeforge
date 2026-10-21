@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import importlib.util
 import inspect
+import importlib.abc
 from functools import wraps
 import json
 import math
@@ -13,6 +14,7 @@ from pathlib import Path
 import sys
 import traceback
 from types import ModuleType
+from shapeforge import runtime
 
 import gdsfactory as gf
 
@@ -23,6 +25,8 @@ _libraries = {}
 _modules = {}
 _module_pdks = {}
 _types = {"float": float, "int": int, "bool": bool, "str": str}
+_contracts = {}
+_module_paths = {}
 
 
 class ExternalGeneratorError(ValueError):
@@ -77,15 +81,15 @@ def source_path(root, file):
     return path
 
 
-def source_digest(root):
+def source_digest(root, sources=None):
+    if sources is None:
+        sources = {path.relative_to(root).as_posix(): source_path(root, path.relative_to(root).as_posix()).read_bytes()
+                   for path in root.rglob("*.py") if "__pycache__" not in path.parts}
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        source_path(root, path.relative_to(root).as_posix())
-        digest.update(path.relative_to(root).as_posix().encode())
+    for relative, source in sorted(sources.items()):
+        digest.update(relative.encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(source)
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -109,23 +113,78 @@ def available_generators(name):
 
 def _local_module(module, root):
     file = getattr(module, "__file__", None)
-    return file is not None and Path(file).resolve().is_relative_to(root)
+    if file is None:
+        return False
+    resolved = _module_paths.get(file)
+    if resolved is None:
+        resolved = _module_paths[file] = Path(file).resolve()
+    return resolved.is_relative_to(root)
+
+
+def source_snapshot(recipe):
+    def read():
+        root = library_root(recipe["library"], recipe["pdk"])
+        source_path(root, recipe["file"])
+        sources = {path.relative_to(root).as_posix(): source_path(root, path.relative_to(root).as_posix()).read_bytes()
+                   for path in root.rglob("*.py") if "__pycache__" not in path.parts}
+        digest = source_digest(root, sources)
+        runtime.count("external_manifests")
+        return {"root": root, "digest": digest, "sources": sources}
+    return runtime.loaded(("external_sources", recipe["library"], recipe["pdk"]), read)
+
+
+class _SnapshotImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Trusted library sources pinned to the version loaded by this operation."""
+    def __init__(self, snapshot, prefix, base=Path()):
+        self.root, self.sources, self.prefix = snapshot["root"], snapshot["sources"], prefix
+        self.base = base
+
+    def relative(self, fullname):
+        prefixed = fullname.startswith(self.prefix + ".")
+        name = fullname.removeprefix(self.prefix + ".").replace(".", "/")
+        for base in (Path(),) if prefixed else (self.base, Path()):
+            relative = (base / name).as_posix()
+            for file, package in ((relative + "/__init__.py", True), (relative + ".py", False)):
+                if file in self.sources:
+                    return file, package
+            if any(source.startswith(relative + "/") for source in self.sources):
+                return relative + "/__init__.py", True
+        return None
+
+    def find_spec(self, fullname, path=None, target=None):
+        entry = self.relative(fullname)
+        if entry is None:
+            return None
+        relative, package = entry
+        return importlib.util.spec_from_loader(fullname, self, origin=str(self.root / relative), is_package=package)
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        relative, package = self.relative(module.__name__)
+        module.__file__ = str(self.root / relative)
+        if package:
+            module.__path__ = [str((self.root / relative).parent)]
+        exec(compile(self.sources.get(relative, b""), module.__file__, "exec"), module.__dict__)
 
 
 @contextmanager
-def generator_context(recipe):
+def generator_context(recipe, snapshot=None):
     function_name = recipe["function"]
     if not isinstance(function_name, str) or not function_name.isidentifier() or function_name.startswith("_"):
         raise ValueError("External generators must be public function identifiers.")
-    root = library_root(recipe["library"], recipe["pdk"])
-    path = source_path(root, recipe["file"])
-    digest = source_digest(root)
+    snapshot = snapshot or source_snapshot(recipe)
+    root, digest = snapshot["root"], snapshot["digest"]
+    path = root / recipe["file"]
+    if recipe["file"] not in snapshot["sources"]:
+        raise ValueError(f"External source is missing: {recipe['file']}.")
     key = (str(root), digest, recipe["file"], recipe["pdk"])
     # Absolute sibling imports (e.g. `from utils import ...`) belong to the
     # library during loading AND generation. Restore pre-existing modules after
     # the operation, including failures. Cached modules retain decorator caches.
-    local_names = {p.stem for base in (root, path.parent) for p in base.glob("*.py")}
-    local_names |= {p.name for base in (root, path.parent) for p in base.iterdir() if p.is_dir()}
+    local_names = {Path(relative).parts[0].removesuffix(".py") for relative in snapshot["sources"]}
+    local_names.update(Path(relative).stem for relative in snapshot["sources"] if (root / relative).parent == path.parent)
     saved = {name: module for name, module in sys.modules.items()
              if name.split(".")[0] in local_names or _local_module(module, root)}
     old_path = sys.path[:]
@@ -135,6 +194,7 @@ def generator_context(recipe):
     previous = {cell.cell_index() for cell in gf.kcl.layout.each_cell()}
     prefix = "sfext_" + hashlib.sha256(repr(key).encode()).hexdigest()[:16]
     scope = _modules.setdefault(key, {})
+    importer = _SnapshotImporter(snapshot, prefix, Path(recipe["file"]).parent)
     @wraps(original_cell)
     def scoped_cell(function=None, **options):
         def decorate(func):
@@ -148,6 +208,7 @@ def generator_context(recipe):
             return original_cell(**options)(func)
         return decorate(function) if function is not None else decorate
     try:
+        sys.meta_path.insert(0, importer)
         gf.cell = scoped_cell
         for name in saved:
             sys.modules.pop(name, None)
@@ -156,8 +217,7 @@ def generator_context(recipe):
         sys.dont_write_bytecode = True
         if prefix not in sys.modules:
             init = root / "__init__.py"
-            if init.is_file():
-                source_path(root, "__init__.py")
+            if "__init__.py" in snapshot["sources"]:
                 package_spec = importlib.util.spec_from_file_location(prefix, init)
                 package = importlib.util.module_from_spec(package_spec)
             else:
@@ -167,9 +227,9 @@ def generator_context(recipe):
                 package.__file__ = str(init)
                 package.__spec__ = importlib.util.spec_from_loader(prefix, loader=None, is_package=True)
             sys.modules[prefix] = package
-            if init.is_file():
+            if "__init__.py" in snapshot["sources"]:
                 try:
-                    exec(compile(init.read_bytes(), str(init), "exec"), package.__dict__)
+                    exec(compile(snapshot["sources"]["__init__.py"], str(init), "exec"), package.__dict__)
                 except Exception:
                     sys.modules.pop(prefix, None)
                     raise
@@ -192,7 +252,7 @@ def generator_context(recipe):
             # Read source directly: timestamp-based .pyc caches can miss edits
             # made in the same second and imports must not write into libraries.
             try:
-                exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+                exec(compile(snapshot["sources"][recipe["file"]], str(path), "exec"), module.__dict__)
             except Exception:
                 sys.modules.pop(module_name, None)
                 raise
@@ -206,6 +266,8 @@ def generator_context(recipe):
             raise ValueError(f"No public generator {recipe['function']!r} defined in {recipe['file']}.")
         yield function, digest
     finally:
+        if importer in sys.meta_path:
+            sys.meta_path.remove(importer)
         # Release fixed names of newly created, unlocked external cells. Never
         # rename shared locked PDK cells or cells that existed before this call.
         try:
@@ -241,9 +303,14 @@ def parameter_specs(function):
     return specs
 
 
+@runtime.provider
 def generator_specs(recipe):
-    with generator_context(recipe) as (function, _):
-        return parameter_specs(function)
+    snapshot = source_snapshot(recipe)
+    key = (str(snapshot["root"]), snapshot["digest"], recipe["file"], recipe["function"], recipe["pdk"])
+    if key not in _contracts:
+        with generator_context(recipe, snapshot) as (function, _):
+            _contracts[key] = parameter_specs(function)
+    return _contracts[key]
 
 
 def _literal(value, kind, name):
@@ -278,10 +345,12 @@ def resolve_arguments(values, types, parameters):
     return result
 
 
+@runtime.provider
 def generate_external(reference, values, parameters=None):
     from shapeforge.components import GeneratedComponent, _generated, dependency_versions
-    with generator_context(reference) as (function, digest):
-        specs = parameter_specs(function)
+    snapshot = source_snapshot(reference)
+    contract = (str(snapshot["root"]), snapshot["digest"], reference["file"], reference["function"], reference["pdk"])
+    def resolve(specs):
         types = {name: spec["type"] for name, spec in specs.items()}
         effective = dict(values)
         for name, spec in specs.items():
@@ -291,10 +360,22 @@ def generate_external(reference, values, parameters=None):
         recipe = {"provider": "external-python", "library": reference["library"],
                   "file": reference["file"], "function": reference["function"], "pdk": reference["pdk"],
                   "arguments": arguments, "parameter_types": types,
-                  "implementation_digest": digest, "versions": dependency_versions()}
-        key = json.dumps(recipe, sort_keys=True, allow_nan=False)
+                  "implementation_digest": snapshot["digest"], "versions": dependency_versions()}
+        key = runtime.cache_key(recipe, (str(snapshot["root"]),))
+        return arguments, recipe, key
+    specs = _contracts.get(contract)
+    if specs is not None:
+        arguments, recipe, key = resolve(specs)
+        if key in _generated:
+            runtime.count("generation_cache_hits")
+            return _generated[key]
+    with generator_context(reference, snapshot) as (function, digest):
+        if specs is None:
+            specs = _contracts[contract] = parameter_specs(function)
+            arguments, recipe, key = resolve(specs)
         if key not in _generated:
             try:
+                runtime.count("generator_executions")
                 component = function(**arguments)
             except Exception as error:
                 root = library_root(reference["library"], reference["pdk"])

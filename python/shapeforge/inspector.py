@@ -95,10 +95,6 @@ def apply(session, base, section, values):
     if current["reasons"][section]:
         raise ValueError(current["reasons"][section])
     if section == "generation":
-        from shapeforge.project_ports import is_project_port
-        if not is_project_port(current["recipe"]):
-            planned = session.primitive_update_plan(input_replacements={current["id"]: values})
-            session.placement_plan(component_replacements=planned)
         session.edit_primitive_parameters(values)
     elif section == "geometry":
         session.define_box_extents(values)

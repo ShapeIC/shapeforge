@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import pya
+from shapeforge import runtime
 
 from shapeforge.parameters import resolve_value
 
@@ -175,6 +176,8 @@ def prepare(session, objects, replacement=None):
             item["local_box"] = source["local_box"] if "local_box" in source else source["component"].kdb_cell.dbbox()
             if source["type"] == "box":
                 item["layer"] = source["layer"]
+                item["definition"] = {"version": 1, "width_um": item["local_box"].width(),
+                                      "height_um": item["local_box"].height()}
     for identity, item in objects.items():
         if identity in removals:
             continue
@@ -199,6 +202,9 @@ def member_transform(session, item, source, transform):
 
 
 def locate(session, identity):
+    index = getattr(session, "_apply_index", None)
+    if index is not None:
+        return index.get(identity)
     matches = [i for i in session.cell.each_inst() if i.property("shapeforge.instance_id") == identity]
     for layer in session.layout.layer_indexes():
         matches.extend(shape for shape in session.cell.shapes(layer).each() if shape.property("shapeforge.object_id") == identity)
@@ -208,6 +214,9 @@ def locate(session, identity):
 
 
 def locate_box(session, identity):
+    index = getattr(session, "_apply_index", None)
+    if index is not None:
+        return index.box(identity)
     matches = [(shape, layer) for layer in session.layout.layer_indexes()
                for shape in session.cell.shapes(layer).each() if shape.property("shapeforge.object_id") == identity]
     if len(matches) != 1 or not matches[0][0].is_box():
@@ -228,6 +237,7 @@ def selected_owner(session):
     return identity, locate(session, identity)
 
 
+@runtime.operation()
 def configure(session, definition):
     if not session.layout.is_editable():
         raise ValueError("Open KLayout in editor mode.")
@@ -235,8 +245,7 @@ def configure(session, definition):
     previous = source.property(ARRAY)
     definition = {**definition, "version": 1, "members": json.loads(previous)["members"] if previous else {}}
     validate_definition(definition, session.parameters())
-    components = session.primitive_update_plan()
-    updates, _ = session.placement_plan(component_replacements=components, array_replacement=(identity, definition))
+    components, updates = session.plan_change(array_replacement=(identity, definition))
     view = session.cellview.view()
     session.hide_ports()
     view.cancel()
@@ -307,8 +316,10 @@ def apply_metadata(session, updates):
             continue
         if item["type"] == "box":
             _, layer = locate_box(session, member["owner_id"])
-            matches = [(shape, index) for index in session.layout.layer_indexes() for shape in session.cell.shapes(index).each()
-                       if shape.property("shapeforge.object_id") == item["id"]]
+            index = getattr(session, "_apply_index", None)
+            matches = ([index.box(item["id"])] if item["id"] in index.entries else []) if index else [
+                (shape, layer_index) for layer_index in session.layout.layer_indexes() for shape in session.cell.shapes(layer_index).each()
+                if shape.property("shapeforge.object_id") == item["id"]]
             if matches and matches[0][1] != layer:
                 old, _ = matches[0]
                 properties, box = old.prop_id, old.box
@@ -323,9 +334,13 @@ def apply_metadata(session, updates):
             shape.set_property("shapeforge.object_id", item["id"])
             shape.set_property("shapeforge.box", json.dumps(item["definition"], allow_nan=False))
             shape.set_property(MEMBER, json.dumps(member, allow_nan=False))
+            if index:
+                index.add(item["id"], shape, layer)
             continue
         source = locate(session, member["owner_id"])
-        matches = [i for i in session.cell.each_inst() if i.property("shapeforge.instance_id") == item["id"]]
+        index = getattr(session, "_apply_index", None)
+        matches = ([index.get(item["id"])] if item["id"] in index.entries else []) if index else [
+            i for i in session.cell.each_inst() if i.property("shapeforge.instance_id") == item["id"]]
         instance = matches[0] if matches else session.cell.insert(pya.DCellInstArray(source.cell_index, transform))
         instance.cell_index = source.cell_index
         instance.set_property("shapeforge.instance_id", item["id"])
@@ -334,3 +349,5 @@ def apply_metadata(session, updates):
         if source.property(OUTPUTS) is not None:
             instance.set_property(OUTPUTS, source.property(OUTPUTS))
         instance.set_property(MEMBER, json.dumps(member, allow_nan=False))
+        if index:
+            index.add(item["id"], instance)
